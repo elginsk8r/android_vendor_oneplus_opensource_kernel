@@ -87,7 +87,7 @@ unsigned int tri_key_debug = 0;
 //static int up_buf[20] = {0};
 //static int down_buf[20] = {0};
 
-//static short tol0 = 10;
+static short tol0 = 15;
 static short tol1 = 15;
 static short tol2 = 22;
 static short tol3 = 92;
@@ -402,41 +402,41 @@ static int interf_get_position(struct extcon_dev_data *chip)
 	delta1 = chip->dhall_data1 - last_d1;
 	TRI_KEY_LOG("tri_key: delta0 is %d ,delta1 is %d,last_postion is %d\n",
 			delta0, delta1, last_position);
-	if ((delta1 > calib_upHall_UM_distance - tol1 &&
-			delta1 < calib_upHall_UM_distance + tol1) &&
-			(delta0 > calib_dnHall_UM_distance - tol1 &&
-			delta0 < calib_dnHall_UM_distance + tol1)) {
+	if ((delta1 > calib_upHall_UM_distance - tol0 &&
+			delta1 < calib_upHall_UM_distance + tol0) &&
+			(delta0 > calib_dnHall_UM_distance - tol0 &&
+			delta0 < calib_dnHall_UM_distance + tol0)) {
 		if (last_position == MID_STATE)
 			return UP_STATE;
 			}
-	if ((delta1 > calib_upHall_UD_distance - tol1 &&
-		delta1 < calib_upHall_UD_distance + tol1) &&
-		(delta0 > calib_dnHall_UD_distance - tol1 &&
-		delta0 < calib_dnHall_UD_distance + tol1))
+	if ((delta1 > calib_upHall_UD_distance - tol0 &&
+		delta1 < calib_upHall_UD_distance + tol0) &&
+		(delta0 > calib_dnHall_UD_distance - tol0 &&
+		delta0 < calib_dnHall_UD_distance + tol0))
 		return UP_STATE;
-	if ((delta1 > -calib_upHall_MD_distance - tol1 &&
-		delta1 < -calib_upHall_MD_distance + tol1) &&
-		(delta0 > -calib_dnHall_MD_distance - tol1 &&
-		delta0 < -calib_dnHall_MD_distance + tol1)) {
+	if ((delta1 > -calib_upHall_MD_distance - tol0 &&
+		delta1 < -calib_upHall_MD_distance + tol0) &&
+		(delta0 > -calib_dnHall_MD_distance - tol0 &&
+		delta0 < -calib_dnHall_MD_distance + tol0)) {
 		if (last_position == MID_STATE)
 			return DOWN_STATE;
 			}
-	if ((delta1 > -calib_upHall_UD_distance - tol1 &&
-		delta1 < -calib_upHall_UD_distance + tol1) &&
-		(delta0 > -calib_dnHall_UD_distance - tol1 &&
-		delta0 < -calib_dnHall_UD_distance + tol1))
+	if ((delta1 > -calib_upHall_UD_distance - tol0 &&
+		delta1 < -calib_upHall_UD_distance + tol0) &&
+		(delta0 > -calib_dnHall_UD_distance - tol0 &&
+		delta0 < -calib_dnHall_UD_distance + tol0))
 		return DOWN_STATE;
-	if ((delta1 > -calib_upHall_UM_distance - tol1 &&
-		delta1 < -calib_upHall_UM_distance + tol1) &&
-		(delta0 > -calib_dnHall_UM_distance - tol1 &&
-		delta0 < -calib_dnHall_UM_distance + tol1)) {
+	if ((delta1 > -calib_upHall_UM_distance - tol0 &&
+		delta1 < -calib_upHall_UM_distance + tol0) &&
+		(delta0 > -calib_dnHall_UM_distance - tol0 &&
+		delta0 < -calib_dnHall_UM_distance + tol0)) {
 		if (last_position == UP_STATE)
 			return MID_STATE;
 			}
-	if ((delta1 > calib_upHall_MD_distance - tol1 &&
-		delta1 < calib_upHall_MD_distance + tol1) &&
-		(delta0 > calib_dnHall_MD_distance - tol1 &&
-		delta0 < calib_dnHall_MD_distance + tol1)) {
+	if ((delta1 > calib_upHall_MD_distance - tol0 &&
+		delta1 < calib_upHall_MD_distance + tol0) &&
+		(delta0 > calib_dnHall_MD_distance - tol0 &&
+		delta0 < calib_dnHall_MD_distance + tol0)) {
 		if (last_position == DOWN_STATE)
 			return MID_STATE;
 			}
@@ -449,35 +449,54 @@ static int get_position(struct extcon_dev_data *chip)
 	short diff;
 	diff = chip->dhall_data1 - chip->dhall_data0;
 	if (chip->dhall_data0 > 0) {
+		if (g_the_chip->project_support) { //18857
+			tol3 = calib_UpValueMin + tol2;
+			tol4 = calib_DnValueMin - tol2;
+			TRI_KEY_LOG("tol3 is %d, tol4 is %d\n", tol3, tol4);
+		}
 		//if (diff > calib_UpValueMin - tol1 && diff < calib_UpValueMin + tol2)
 		if (diff > calib_UpValueMin - tol1 && diff < tol3)
 			chip->position = UP_STATE;
 		if (calib_MdValueMin < 0) {
 			if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
 				chip->position = MID_STATE;
-			}
+		}
 		if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
 			if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
 				chip->position = MID_STATE;
-			}
+		}
 		//if (diff > calib_DnValueMin - tol2 && diff < calib_DnValueMin + tol1)
 		if (diff > tol4 && diff < calib_DnValueMin + tol1)
 			chip->position = DOWN_STATE;
 	} else {
-		//if (diff > calib_UpValueMin - tol2 && diff < calib_UpValueMin + tol1)
-		if (diff > -tol3 && diff < calib_UpValueMin + tol1)
-			chip->position = UP_STATE;
-		if (calib_MdValueMin < 0) {
-			if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
-				chip->position = MID_STATE;
+		if (g_the_chip->project_support) { //18857
+			if (diff > calib_UpValueMin - tol2 && diff < calib_UpValueMin + tol1)
+				chip->position = UP_STATE;
+			if (calib_MdValueMin < 0) {
+				if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
+					chip->position = MID_STATE;
 			}
-		if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
-			if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
-				chip->position = MID_STATE;
+			if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
+				if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
+					chip->position = MID_STATE;
 			}
-		//if (diff > calib_DnValueMin - tol1 && diff < calib_DnValueMin + tol2)
-		if (diff > calib_DnValueMin - tol1 && diff < -tol4)
-			chip->position = DOWN_STATE;
+			if (diff > calib_DnValueMin - tol1 && diff < calib_DnValueMin + tol2)
+				chip->position = DOWN_STATE;
+		} else { //18865
+			if (diff > -tol3 && diff < calib_UpValueMin + tol1)
+				chip->position = UP_STATE;
+			if (calib_MdValueMin < 0) {
+				if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
+					chip->position = MID_STATE;
+			}
+			if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
+				if (diff > calib_MdValueMin - tol1 && diff < calib_MdValueMin + tol1)
+					chip->position = MID_STATE;
+			}
+			//if (diff > calib_DnValueMin - tol1 && diff < calib_DnValueMin + tol2)
+			if (diff > calib_DnValueMin - tol1 && diff < -tol4)
+				chip->position = DOWN_STATE;
+		}
 	}
 	return 0;
 }
@@ -486,16 +505,26 @@ static int judge_interference(struct extcon_dev_data *chip)
 {
 	short delta;
 	short sum;
+	short upMindelta;
+	short downMindelta;
+
 	delta = chip->dhall_data1 - chip->dhall_data0;
 	TRI_KEY_LOG("tri_key:delta is %d\n", delta);
 	sum = chip->dhall_data0 + chip->dhall_data1;
 	TRI_KEY_LOG("tri_key:sum is %d\n", sum);
 	if (chip->dhall_data1 > 0) {//the hall data is positive number
 		//if (delta > calib_UpValueMin - tol1 && delta < calib_UpValueMin + tol2) {
-		if (delta > calib_UpValueMin - tol1 && delta < tol3) {
-			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-				calib_UpValueMin, calib_UpValueSum);
-			if (sum < calib_UpValueSum - tol1 || sum > calib_UpValueSum + tol2) {
+		if (g_the_chip->project_support) { //18857
+			tol3 = calib_UpValueMin + tol2;
+			tol4 = calib_DnValueMin - tol2;
+			TRI_KEY_LOG("tol3 is %d, tol4 is %d\n", tol3, tol4);
+		}
+		upMindelta = (calib_UpValueMin - tol1) > 35 ? (calib_UpValueMin - tol1) : 35;
+		downMindelta = (calib_DnValueMin + tol1 ) > -35 ? -35 : (calib_DnValueMin + tol1);
+		TRI_KEY_LOG("tri_key:upMindelta is %d, downMinDelta is %d\n", upMindelta, downMindelta);
+		if (delta > upMindelta && delta < tol3) {
+			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_UpValueMin, calib_UpValueSum);
+			if (sum < calib_UpValueSum - tol2 || sum > calib_UpValueSum + tol2) {
 				chip->interf = 1;
 				chip->state = 1;
 			} else {
@@ -506,10 +535,9 @@ static int judge_interference(struct extcon_dev_data *chip)
 		}
 		if (calib_MdValueMin < 0) {
 			if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
-				TRI_KEY_LOG("tri_key:calibMin:%d,calib_Sum:%d\n",
-					calib_MdValueMin, calib_MdValueSum);
+				TRI_KEY_LOG("tri_key:calibMin:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
 
-				if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol1) {
+				if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
 					chip->interf = 1;
 					chip->state = 2;
 				} else {
@@ -521,25 +549,23 @@ static int judge_interference(struct extcon_dev_data *chip)
 		}
 		if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
 			if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
-				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-					calib_MdValueMin, calib_MdValueSum);
+				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
 
-				if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol1) {
+				if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
 					chip->interf = 1;
 					chip->state = 2;
 				} else {
 					chip->interf = 0;
 					chip->state = 2;
-					}
-				return 0;
 				}
+				return 0;
 			}
+		}
 		//if (delta > calib_DnValueMin - tol2 && delta < calib_DnValueMin + tol1) {
-		if (delta > tol4 && delta < calib_DnValueMin + tol1) {
-			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-				calib_DnValueMin, calib_DnValueSum);
+		if (delta > tol4 && delta < downMindelta) {
+			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_DnValueMin, calib_DnValueSum);
 
-			if (sum < calib_DnValueSum - tol1 || sum > calib_DnValueSum + tol2) {
+			if (sum < calib_DnValueSum - tol2 || sum > calib_DnValueSum + tol2) {
 				chip->interf = 1;
 				chip->state = 3;
 			} else {
@@ -552,70 +578,121 @@ static int judge_interference(struct extcon_dev_data *chip)
 		chip->state = 0;
 	} else {//the hall data is negative number
 		//if (delta > calib_UpValueMin - tol2 && delta < calib_UpValueMin + tol1) {
-		if (delta > -tol3 && delta < calib_UpValueMin + tol1) {
-			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-				calib_UpValueMin, calib_UpValueSum);
-
-			if (sum < calib_UpValueSum - tol2 || sum > calib_UpValueSum + tol1) {
-				chip->interf = 1;
-				chip->state = 1;
-			} else {
-				chip->interf = 0;
-				chip->state = 1;
-			}
-			return 0;
-		}
-		if (calib_MdValueMin < 0) {
-			if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
-				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-					calib_MdValueMin, calib_MdValueSum);
-
-				if (sum > calib_MdValueSum + tol1 || sum < calib_MdValueSum - tol2) {
+		upMindelta = (calib_UpValueMin + tol1) > -35 ? -35 : (calib_UpValueMin + tol1);
+		downMindelta = (calib_DnValueMin - tol1 ) > 35 ? (calib_DnValueMin - tol1) : 35;
+		TRI_KEY_LOG("tri_key:upMindelta is %d, downMinDelta is %d\n", upMindelta, downMindelta);
+		if (g_the_chip->project_support) { //18857
+			tol3 = calib_UpValueMin - tol2;
+			tol4 = calib_DnValueMin + tol2;
+			TRI_KEY_LOG("tol3 is %d, tol4 is %d\n", tol3, tol4);
+			if (delta > tol3 && delta < upMindelta) {
+				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_UpValueMin, calib_UpValueSum);
+				if (sum < calib_UpValueSum - tol2 || sum > calib_UpValueSum + tol2) {
 					chip->interf = 1;
-					chip->state = 2;
+					chip->state = 1;
 				} else {
 					chip->interf = 0;
-					chip->state = 2;
+					chip->state = 1;
 				}
 				return 0;
 			}
-		}
-		if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
-			if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
-				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-					calib_MdValueMin, calib_MdValueSum);
-
-				if (sum > calib_MdValueSum + tol1 ||
-					sum < calib_MdValueSum - tol2) {
-					chip->interf = 1;
-					chip->state = 2;
-				} else {
-					chip->interf = 0;
-					chip->state = 2;
+			if (calib_MdValueMin < 0) {
+				if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
+					TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
+					if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
+						chip->interf = 1;
+						chip->state = 2;
+					} else {
+						chip->interf = 0;
+						chip->state = 2;
 					}
-				return 0;
+					return 0;
 				}
 			}
-		//if (delta > calib_DnValueMin - tol1 && delta < calib_DnValueMin + tol2) {
-		if (delta > calib_DnValueMin - tol1 && delta < -tol4) {
-			TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n",
-				calib_DnValueMin, calib_DnValueSum);
-
-			if (sum < calib_DnValueSum - tol2 || sum > calib_DnValueSum + tol1) {
-				chip->interf = 1;
-				chip->state = 3;
-			} else {
-				chip->interf = 0;
-				chip->state = 3;
+			if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
+				if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
+					TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
+					if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
+						chip->interf = 1;
+						chip->state = 2;
+					} else {
+						chip->interf = 0;
+						chip->state = 2;
+					}
+					return 0;
+				}
 			}
-			return 0;
+			//if (delta > calib_DnValueMin - tol1 && delta < calib_DnValueMin + tol2) {
+			if (delta > downMindelta && delta < tol4) {
+				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_DnValueMin, calib_DnValueSum);
+				if (sum < calib_DnValueSum - tol2 || sum > calib_DnValueSum + tol2) {
+					chip->interf = 1;
+					chip->state = 3;
+				} else {
+					chip->interf = 0;
+					chip->state = 3;
+				}
+				return 0;
+			}
+			chip->interf = 1;
+			chip->state = 0;
+		}else {//18865
+			if (delta > -tol3 && delta < upMindelta) {
+				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_UpValueMin, calib_UpValueSum);
+				if (sum < calib_UpValueSum - tol2 || sum > calib_UpValueSum + tol2) {
+					chip->interf = 1;
+					chip->state = 1;
+				} else {
+					chip->interf = 0;
+					chip->state = 1;
+				}
+				return 0;
+			}
+			if (calib_MdValueMin < 0) {
+				if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
+					TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
+					if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
+						chip->interf = 1;
+						chip->state = 2;
+					} else {
+						chip->interf = 0;
+						chip->state = 2;
+					}
+					return 0;
+				}
+			}
+			if (calib_MdValueMin > 0 || calib_MdValueMin == 0) {
+				if (delta > calib_MdValueMin - tol1 && delta < calib_MdValueMin + tol1) {
+					TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_MdValueMin, calib_MdValueSum);
+					if (sum > calib_MdValueSum + tol2 || sum < calib_MdValueSum - tol2) {
+						chip->interf = 1;
+						chip->state = 2;
+					} else {
+						chip->interf = 0;
+						chip->state = 2;
+					}
+					return 0;
+				}
+			}
+			//if (delta > calib_DnValueMin - tol1 && delta < calib_DnValueMin + tol2) {
+			if (delta > downMindelta && delta < -tol4) {
+				TRI_KEY_LOG("tri_key:calib_Min:%d,calib_Sum:%d\n", calib_DnValueMin, calib_DnValueSum);
+				if (sum < calib_DnValueSum - tol2 || sum > calib_DnValueSum + tol2) {
+					chip->interf = 1;
+					chip->state = 3;
+				} else {
+					chip->interf = 0;
+					chip->state = 3;
+				}
+				return 0;
+			}
+			chip->interf = 1;
+			chip->state = 0;
 		}
-		chip->interf = 1;
-		chip->state = 0;
 	}
 	return -EINVAL;
-
 }
+
 
 
 static int oneplus_get_data(struct extcon_dev_data *chip)
@@ -820,7 +897,7 @@ static void tri_key_dev_work(struct work_struct *work)
 	int usecs;
 
 	starttime = ktime_get();
-//	msleep(50);
+	msleep(100);
 //get data
 	res = oneplus_get_data(chip);
 	if (res < 0) {
@@ -1167,19 +1244,20 @@ static ssize_t hall_debug_info_show(struct device *dev, struct device_attribute 
 
 static ssize_t hall_set_value_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	return snprintf(buf, PAGE_SIZE, "%d\n", tol1);
+	return snprintf(buf, PAGE_SIZE, "%d,%d\n", tol1, tol2);
 }
 
 static ssize_t hall_set_value_store(struct device *pdev, struct device_attribute *attr, const char *buf, size_t count)
 {
-	int tmp = 0;
-	char buffer[4] = {0};
+	int tmp[2] = {0};
+	char buffer[6] = {0};
 
 	strlcpy(buffer, buf, sizeof(buffer));
 	TRI_KEY_LOG("buffer is %s\n", buffer);
-	if (sscanf(buffer, "%d", &tmp) == 1) {
-		tol1 = tmp;
-		TRI_KEY_LOG("tol1 is %d\n", tol1);
+	if (sscanf(buffer, "%d, %d", &tmp[0], &tmp[1]) == 2) {
+		tol1 = tmp[0];
+		tol2 = tmp[1];
+		TRI_KEY_LOG("tol1 is %d, tol2 is %d\n", tol1, tol2);
 	}
 	else
 		TRI_KEY_ERR("invalid content: %s, length = %zd\n", buf, count);
@@ -1216,7 +1294,9 @@ static int tri_key_platform_probe(struct platform_device *pdev)
 	int err = 0;
 	int res = 0;
 	//int hall_value_min = 0;
+	struct device_node *np;
 
+	np = pdev->dev.of_node;
 	TRI_KEY_LOG("call %s\n", __func__);
 
 	if (!g_the_chip) {
@@ -1230,6 +1310,8 @@ static int tri_key_platform_probe(struct platform_device *pdev)
 		chip = g_the_chip;
 	}
 	mutex_init(&chip->mtx);
+	chip->project_support = of_property_read_bool(np, "project_support");
+	TRI_KEY_LOG("project_support is %d\n", chip->project_support);
 	chip->dev = &pdev->dev;
 	err = sysfs_create_group(&pdev->dev.kobj, &tri_key_attribute_group);
 	if (err) {

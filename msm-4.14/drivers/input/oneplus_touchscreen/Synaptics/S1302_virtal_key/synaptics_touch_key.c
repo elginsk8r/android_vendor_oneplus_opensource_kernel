@@ -319,7 +319,7 @@ static int tc_hw_pwron(struct synaptics_ts_data *ts)
         TPD_DEBUG("synaptics:enable the reset_gpio\n");
         gpio_direction_output(ts->reset_gpio, 1);
     }
-    msleep(80); //mingqiang.guo@phone.bsp, 2016/7/7 modify synaptics tp vender need delay 80ms
+    msleep(80);
     return rc;
 }
 
@@ -487,8 +487,6 @@ static int synaptics_init_panel(struct synaptics_ts_data *ts)
         TPD_INFO("init_panel failed for page select\n");
         return -1;
     }
-    /*device control: normal operation, configur = 1*/
-    //chenggang.li @BSP change 0x80 to 0x84, bit2:1 nosleep  bit2:0 sleep
     ret = synaptics_rmi4_i2c_write_byte(ts->client, F01_RMI_CTRL00, 0x80);
     if (ret < 0) {
         msleep(150);
@@ -671,7 +669,6 @@ static int synaptics_rmi4_i2c_write_word(struct i2c_client* client,
     return retval;
 }
 
-//mingqiang.guo@phone.bsp 2016-1-7 add for key press all the time, can not touch up, need force cal
 #ifdef LCD_TRIGGER_KEY_FORCE_CAL
 static int key_press_all_the_time = 0;
 void judge_key_press_all_the_time(void)
@@ -727,7 +724,6 @@ static void int_key(struct synaptics_ts_data *ts)
     else
         TPD_INFO("%s button_key : %d   pre_btn_state:%d\n", __func__, button_key, ts->pre_btn_state);
 
-    //mingqiang.guo add for two key down, can not report long press, resolve for  electrostatic experiment
     switch(button_key&0x03)
     {
         case 0: //up
@@ -1154,7 +1150,6 @@ const struct file_operations proc_debug =
     .release    = single_release,
 };
 
-//guomingqiang@phone.bsp 2015-12-17 add for touch key debug node
 static ssize_t synaptics_rmi4_baseline_show_s1302(struct device *dev, char *buf, bool savefile)
 {
     int ret = 0;
@@ -1249,14 +1244,11 @@ static ssize_t synaptics_rmi4_baseline_show_s1302(struct device *dev, char *buf,
                 sprintf(data_buf, "%d, ", baseline_data);
                 sys_write(fd, data_buf, strlen(data_buf));
             }
-            //TPD_DEBUG("baseline_data is %d\n", baseline_data);
-            //TPD_DEBUG("x = %d  y = %d\n", x, y);
             if ((x == 0) && ((y == 3) || (y == 4)))
             {
                 TPD_DEBUG("count = %d\n", count);
                 if ((baseline_data < *(baseline_data_test + count*2)) || (baseline_data > *(baseline_data_test + count*2 + 1)))
                 {
-                    //TPD_INFO("TPD error baseline_data[%d][%d] = %d[%d, %d]\n", x, y, baseline_data, *(baseline_data_test + count*2),    *(baseline_data_test + count*2 + 1));
                     num_read_chars += sprintf(&(buf[num_read_chars]), "conut = %d TPD error baseline_data[%d][%d] = %d[%d, %d]\n", count, x, y, baseline_data, *(baseline_data_test + count*2), *(baseline_data_test + count*2 + 1));
                     error_count++;
                     goto END;
@@ -1402,8 +1394,6 @@ static ssize_t tp_delta_show(struct file *file, char __user *buf, size_t size, l
 
     count = 0;
     for (x = 0; x < 2; x++) {
-        //TPD_INFO("\n[%d]", x);
-        //num_read_chars += sprintf(&(kernel_buf[num_read_chars]), "\n[%3d]", x);
         for (y = 0; y < 5; y++) {
             ret = synaptics_rmi4_i2c_read_byte(ts_g->client, F54_ANALOG_DATA_BASE + 3);
             tmp_l = ret & 0xff;
@@ -1418,8 +1408,6 @@ static ssize_t tp_delta_show(struct file *file, char __user *buf, size_t size, l
         }
     }
     msleep(60);
-    //ret = synaptics_soft_reset(ts_g);
-    //delay_qt_ms(60);
     synaptics_enable_interrupt(ts_g, 1);
 
     enable_irq(ts_g->irq);
@@ -1546,7 +1534,6 @@ static const struct file_operations tp_baseline_image_proc_fops =
     .read = tp_baseline_show,
     .owner = THIS_MODULE,
 };
-//guomingqiang@phone.bsp 2015-12-17 add for touch key debug node  end
 
 static int synaptics_s1302_proc(void)
 {
@@ -1560,11 +1547,9 @@ static int synaptics_s1302_proc(void)
     proc_entry = proc_create_data("reset", 0666, procdir, &proc_reset, NULL);
     proc_entry = proc_create_data("tp_debug", 0666, procdir, &proc_debug, NULL);
 
-    //guomingqiang@phone.bsp 2015-12-17 add for touch key debug node
     proc_entry = proc_create_data("baseline_test", 0666, procdir, &tp_baseline_test_proc_fops, NULL);
     proc_entry = proc_create_data("tp_delta_data", 0644, procdir, &tp_delta_data_proc_fops, NULL);
     proc_entry = proc_create_data("tp_baseline_image", 0644, procdir, &tp_baseline_image_proc_fops, NULL);
-    //guomingqiang@phone.bsp 2015-12-17 add for touch key debug node end
 
     TPD_INFO("create nodes is successe!\n");
 
@@ -1810,10 +1795,6 @@ static int synapitcs_ts_update(struct i2c_client *client, const uint8_t *data, u
             return -1;
         }
     }
-    //step 7 configure data
-    //TPD_INFO("going to flash configuration area\n");
-    //TPD_INFO("header.firmware_size is 0x%x\n", header.firmware_size);
-    //TPD_INFO("bootloader_size is 0x%x\n", bootloader_size);
     TPD_INFO("update-----------------configuration ------------------update!\n");
     for (j = 0; j < configuration; j++) {
         //a)write SynaF34Reflash_BlockNum to access
@@ -2230,7 +2211,6 @@ static void speedup_synaptics_resume(struct work_struct *work)
     ret = synaptics_soft_reset(ts);
     msleep(50);
 
-    //guomingqiang@phone.bsp 2016-4-15 add for check touch key firmware mode
     bootloader_mode = synaptics_rmi4_i2c_read_byte(ts->client, F01_RMI_DATA_BASE);
     bootloader_mode = bootloader_mode & 0xff;
     bootloader_mode = bootloader_mode & 0x40;

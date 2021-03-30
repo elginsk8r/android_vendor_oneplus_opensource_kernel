@@ -25,7 +25,7 @@
 
 static struct chip_data_s4322 *g_chip_info = NULL;
 
-#define OP17001TRULY_TD4322_1080P_CMD_PANEL 29
+#define OPPO17001TRULY_TD4322_1080P_CMD_PANEL 29
 
 /*******Part0:LOG TAG Declear********************/
 #define TPD_DEVICE "synaptics-s4322"

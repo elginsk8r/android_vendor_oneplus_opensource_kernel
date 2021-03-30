@@ -1,4 +1,3 @@
-#include <asm/uaccess.h>
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
@@ -13,7 +12,7 @@
 #include <linux/project_info.h>
 #include <linux/time.h>
 #include <linux/pm_wakeup.h>
-
+#include <asm/uaccess.h>
 
 #ifndef TPD_USE_EINT
 #include <linux/hrtimer.h>
@@ -3797,7 +3796,7 @@ static void init_parse_dts(struct device *dev, struct touchpanel_data *ts)
     ts->lcd_refresh_rate_switch = of_property_read_bool(np, "lcd_refresh_rate_switch");
     ts->touch_hold_support 		= of_property_read_bool(np, "touch_hold_support");
 	ts->ctl_base_address		= of_property_read_bool(np, "ctrl_base_change");
-
+	ts->fp_coordinate_support		= of_property_read_bool(np, "fp_coordinate_support");
 	ts->charge_detect_support	= of_property_read_bool(np, "charge_detect_support");
 	ts->module_id_support		= of_property_read_bool(np, "module_id_support");
     ts->spuri_fp_touch.lcd_trigger_fp_check = of_property_read_bool(np, "lcd_trigger_fp_check");

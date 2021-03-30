@@ -562,7 +562,7 @@ static int gf_open(struct inode *inode, struct file *filp)
 			nonseekable_open(inode, filp);
 			pr_info("Succeed to open device. irq = %d\n",
 					gf_dev->irq);
-            #if 0  //zoulian@20170727 parse dts move to probe
+            #if 0
 			if (gf_dev->users == 1) {
 				status = gf_parse_dts(gf_dev);
 				if (status)
@@ -582,7 +582,7 @@ static int gf_open(struct inode *inode, struct file *filp)
 	mutex_unlock(&device_list_lock);
 
 	return status;
-#if 0    //zoulian@20170727 parse dts move to probe
+#if 0
 err_irq:
 	gf_cleanup(gf_dev);
 err_parse_dt:
@@ -661,6 +661,30 @@ static struct attribute *gf_attributes[] = {
 static const struct attribute_group gf_attribute_group = {
 	.attrs = gf_attributes,
 };
+
+//#ifdef VENDOR_EDIT
+static struct fp_underscreen_info fp_tpinfo ={0};
+int opticalfp_irq_handler(struct fp_underscreen_info* tp_info)
+{
+	pr_info("[info]:%s", __func__);
+
+	if (gf.spi == NULL) {
+		return 0;
+	}
+	fp_tpinfo = *tp_info;
+	pr_err("fp_tpinfo.x = %d, fp_tpinfo.y = %d, fp_tpinfo.touch_state = %d\n", fp_tpinfo.x, fp_tpinfo.y,fp_tpinfo.touch_state);
+	if (fp_tpinfo.touch_state == 1) {
+		fp_tpinfo.touch_state = GF_NET_EVENT_TP_TOUCHDOWN;
+		sendnlmsg_tp(&fp_tpinfo,sizeof(fp_tpinfo));
+	} else if (fp_tpinfo.touch_state == 0) {
+		fp_tpinfo.touch_state = GF_NET_EVENT_TP_TOUCHUP;
+		sendnlmsg_tp(&fp_tpinfo,sizeof(fp_tpinfo));
+	}
+	return 0;
+}
+
+EXPORT_SYMBOL(opticalfp_irq_handler);
+//#endif
 
 int gf_opticalfp_irq_handler(int event)
 {

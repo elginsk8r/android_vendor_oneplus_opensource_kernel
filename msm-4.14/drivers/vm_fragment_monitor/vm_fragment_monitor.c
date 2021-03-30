@@ -43,6 +43,7 @@ static long monitor_fragment_ioctl(struct file *file, unsigned int cmd, unsigned
 	struct mm_struct *mm;
 	struct vm_area_struct *vma;
 	unsigned long vm_fragment_gap_max = 0;
+	unsigned long gl_fragment_gap_max = 0;
 	void __user *parg = (void __user *)args;
 
 	if (cmd != GET_GAP_SIZE)
@@ -62,6 +63,11 @@ static long monitor_fragment_ioctl(struct file *file, unsigned int cmd, unsigned
 	get_task_struct(task);
 	rcu_read_unlock();
 
+	if (!test_ti_thread_flag((struct thread_info *)task, TIF_32BIT)) {
+		put_task_struct(task);
+		return -EPERM;
+	}
+
 	mm = get_task_mm(task);
 	if (!mm) {
 		put_task_struct(task);
@@ -77,12 +83,14 @@ static long monitor_fragment_ioctl(struct file *file, unsigned int cmd, unsigned
 
 	vma = rb_entry(mm->mm_rb.rb_node, struct vm_area_struct, vm_rb);
 	vm_fragment_gap_max = (vma->rb_subtree_gap >> 20);
+	gl_fragment_gap_max = (vma->rb_glfragment_gap >> 20);
 	mmput(mm);
 	put_task_struct(task);
 
-	pr_info("monitor_fragment_ioctl : pid=%d, vm_fragment_gap_max=%d\n", (int)pid, (int)vm_fragment_gap_max);
+	pr_info("monitor_fragment_ioctl : pid=%d, vm_fragment_gap_max=%d, gl_fragment_gap_max=%d\n",
+				(int)pid, (int)vm_fragment_gap_max, (int)gl_fragment_gap_max);
 
-	if (copy_to_user(parg, &vm_fragment_gap_max, sizeof(unsigned long)))
+	if (copy_to_user(parg, &gl_fragment_gap_max, sizeof(unsigned long)))
 		return -EFAULT;
 
 	return 0;

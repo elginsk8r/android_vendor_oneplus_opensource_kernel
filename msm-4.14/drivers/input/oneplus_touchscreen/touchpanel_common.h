@@ -442,6 +442,7 @@ struct touchpanel_data {
 	bool fingerprint_int_test;							/*fingerprint int pin test*/
 	u8 limit_switch;									/*0 is phone up 1 is crosswise*/
 	u8 touchold_event;									/*0 is touchhold down 1 is up*/
+	bool fp_coordinate_support;							/*19861 fingerpfint need report coordinate*/
 
 #if defined(TPD_USE_EINT)
     struct hrtimer         timer;                       /*using polling instead of IRQ*/

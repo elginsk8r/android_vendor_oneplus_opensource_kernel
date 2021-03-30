@@ -29,7 +29,6 @@ struct file_status_cache {
 	u32 d_ret_ceil;
 };
 
-/* hashing algorithm */
 struct fsc_hash {
 	struct list_head head;
 	atomic_t cnt;
@@ -43,16 +42,10 @@ module_param_named(details, fsc_details, bool, 0644);
 static u32 fsc_d_ret = 128;
 module_param_named(d_ret, fsc_d_ret, uint, 0644);
 
-/* Set a ceil for fsc obj allocation */
 unsigned int fsc_max_val = 100000;
 module_param_named(fsc_max_val, fsc_max_val, uint, 0644);
 static atomic_t fsc_cur_used;
 
-/*
- * Allowed list
- * trailing character should not contain '/'
- * Interface for add/ del allow listi
- */
 #define FSC_ALLOW_LIST_SIZE (32)
 
 struct allow_obj {
@@ -61,7 +54,6 @@ struct allow_obj {
 	size_t len;
 };
 
-/* leave the last one always empty */
 static struct allow_obj fsc_allow_list[FSC_ALLOW_LIST_SIZE + 1];
 static int allow_idx_map[FSC_ALLOW_LIST_SIZE];
 static atomic_t fsc_allow_list_cnt[FSC_ALLOW_LIST_SIZE];
@@ -78,7 +70,6 @@ static inline int get_empty_allow_idx(void) {
 	return -1;
 }
 
-/* To reclaim `out of date` fsc object */
 struct fsc_reclaimer {
 	struct list_head head;
 	atomic_t cnt;
@@ -98,7 +89,6 @@ void fsc_spin_unlock(u32 hidx)
 	spin_unlock(&fsc_htbl[hidx].lock);
 }
 
-/* dcache helper to get absolute path */
 char *fsc_absolute_path(struct path* path, struct dentry* dentry, char *buf, size_t buflen)
 {
 	char localbuf[FSC_PATH_MAX] = {0};
@@ -124,7 +114,6 @@ char *fsc_absolute_path(struct path* path, struct dentry* dentry, char *buf, siz
 	return buf;
 }
 
-/* Using kernel string hash algo to get hash value, and mod to fit bucket */
 unsigned int fsc_get_hidx(const char* path, size_t len)
 {
 	u32 hidx = full_name_hash(NULL, path, len) % FSC_HASH_BUCKET;
@@ -132,7 +121,6 @@ unsigned int fsc_get_hidx(const char* path, size_t len)
 	return hidx;
 }
 
-/* Allock fsc object with initialed value */
 static struct file_status_cache* fsc_alloc(const char* path, size_t len, u32 hidx, int allow_idx)
 {
 	struct file_status_cache* obj;
@@ -149,7 +137,6 @@ static struct file_status_cache* fsc_alloc(const char* path, size_t len, u32 hid
 		return NULL;
 	}
 
-	/* init */
 	strncpy(obj->path, path, len);
 	obj->path[len] = '\0';
 	atomic_set(&obj->refcnt, 1);
@@ -161,7 +148,6 @@ static struct file_status_cache* fsc_alloc(const char* path, size_t len, u32 hid
 	obj->allow_idx = allow_idx;
 	atomic_set(&obj->d_cnt, obj->d_ret_ceil);
 	atomic_inc(&fsc_allow_list_cnt[obj->allow_idx]);
-	/* For some apps, it will catch too much during installing stage, remove those records */
 	if (likely(instcln.tsk) &&
 		atomic_read(&fsc_allow_list_cnt[obj->allow_idx]) >= instcln.thres) {
 		wake_up_process(instcln.tsk);
@@ -209,7 +195,6 @@ static int fsc_allow_list_add_store(const char *buf, const struct kernel_param *
 
 	len = strlen(path);
 	for (i = 0; i < fsc_allow_list_cur && i < FSC_ALLOW_LIST_SIZE; ++i) {
-		/* to avoid add duplicate list */
 		if (strlen(fsc_allow_list[i].path) == len && !strncmp(fsc_allow_list[i].path, path, len)) {
 			kfree(path);
 			return 0;
@@ -313,21 +298,15 @@ static bool fsc_path_allow(const char* path, size_t len, int *allow_idx)
 	size_t flen = 0;
 	size_t offset = 0;
 
-	/*
-	 * enhance for this most frequency case: user 0
-	 * /storage/emulated/0/Android/data/
-	 */
 #define FSC_ALLOW_COMMON_PREFIX "/storage/emulated/0/Android/data/"
 #define FSC_ALLOW_COMMON_PREFIX_LEN (33)
 	if (len < FSC_ALLOW_COMMON_PREFIX_LEN - 1) {
-		/* at least len >= /storage/emulated//Android/data/ */
 		return false;
 	}
 
 	if (strncmp(FSC_ALLOW_COMMON_PREFIX, path, FSC_ALLOW_COMMON_PREFIX_LEN))
 		goto fsc_slow_check;
 
-	/* fsc_fast_check only applied on user 0 */
 	offset = FSC_ALLOW_COMMON_PREFIX_LEN;
 	path += offset;
 	len -= offset;
@@ -352,14 +331,6 @@ fsc_slow_check:
 	return false;
 }
 
-/*
- * To check if path already cached.
- * Calling with lock & unlock
- * Note:
- *   if cached, then
- *     inc refcnt
- *     update ref timestamp
- */
 bool fsc_is_absence_path_exist_locked(const char* path, size_t len, u32 hidx, bool d_check)
 {
 	struct file_status_cache* fsc = NULL;
@@ -380,12 +351,9 @@ bool fsc_is_absence_path_exist_locked(const char* path, size_t len, u32 hidx, bo
 			pr_debug("%s %s exits in bucket %u, d_check: %u, called from %pS\n",
 				__func__, path, hidx, d_check, __builtin_return_address(0));
 			if (d_check) {
-				/* if d_cnt == 0, do real check; otherwise directly return */
 				if (atomic_dec_and_test(&fsc->d_cnt)) {
-					/* set next d_cnt by shift d_ret_ceil 1 */
 					if (fsc->d_ret_ceil < fsc_d_ret)
 						fsc->d_ret_ceil <<= 1;
-					/* set direct return ceil */
 					atomic_set(&fsc->d_cnt, fsc->d_ret_ceil);
 					return false;
 				}
@@ -396,7 +364,6 @@ bool fsc_is_absence_path_exist_locked(const char* path, size_t len, u32 hidx, bo
 	return false;
 }
 
-/* To check if path is good to apply fsc */
 bool fsc_path_check(struct filename *name, size_t *len)
 {
 	const char *sc;
@@ -405,10 +372,8 @@ bool fsc_path_check(struct filename *name, size_t *len)
 		return false;
 
 	for (sc = name->name; *sc != '\0'; ++sc) {
-		/* ignore // .. cases */
 		if (sc != name->name && *sc == *(sc - 1) && (*sc == '/' || *sc == '.'))
 			return false;
-		/* ignore /./ case */
 		else if (sc - name->name > 1 && *sc == '/' && *(sc - 1) == '.' && *(sc - 2) == '/')
 			return false;
 	}
@@ -416,10 +381,6 @@ bool fsc_path_check(struct filename *name, size_t *len)
 	return name->name[*len - 1] != '/' && *len < FSC_PATH_MAX;
 }
 
-/*
- * To check if path already cahced.
- * Lock unlock inside
- */
 bool fsc_absence_check(const char* path, size_t len)
 {
 	unsigned int hidx = 0;
@@ -434,11 +395,6 @@ bool fsc_absence_check(const char* path, size_t len)
 	return false;
 }
 
-/*
- * To insert absence path to hash table
- * Calling with lock & unlock
- * Check if file alread cached before calling
- */
 void fsc_insert_absence_path_locked(const char* path, size_t len, u32 hidx)
 {
 	struct file_status_cache* fsc;
@@ -460,10 +416,6 @@ void fsc_insert_absence_path_locked(const char* path, size_t len, u32 hidx)
 			__func__, path, hidx, __builtin_return_address(0));
 }
 
-/*
- * To delete absence path from hash table
- * Calling with lock & unlock
- */
 void fsc_delete_absence_path_locked(const char* path, size_t len, u32 hidx)
 {
 	struct file_status_cache* fsc;
@@ -472,7 +424,6 @@ void fsc_delete_absence_path_locked(const char* path, size_t len, u32 hidx)
 	if (!fsc_path_allow(path, len, &allow_idx))
 		return;
 
-	/* remove fsc obj from hashing list */
 	list_for_each_entry(fsc, &fsc_htbl[hidx].head, node) {
 		if (strlen(fsc->path) == len && !strncmp(path, fsc->path, len)) {
 			atomic_dec(&fsc_htbl[hidx].cnt);
@@ -485,10 +436,6 @@ void fsc_delete_absence_path_locked(const char* path, size_t len, u32 hidx)
 	}
 }
 
-/*
- * To delete absence path dentry from hash table
- * Lock and unlock inside function
- */
 void fsc_delete_absence_path_dentry(struct path* path, struct dentry* dentry)
 {
 	char buf[FSC_PATH_MAX] = {0};
@@ -507,7 +454,6 @@ void fsc_delete_absence_path_dentry(struct path* path, struct dentry* dentry)
 	}
 }
 
-/* summary */
 struct fsc_summary {
 	char path[FSC_PATH_MAX];
 	char package[FSC_PATH_MAX];
@@ -520,7 +466,6 @@ static const char* prefix = "/storage/emulated/0/Android/data";
 static struct fsc_summary* summary[FSC_SUMMARY_MAX];
 static unsigned int summary_idx = 0;
 
-/* Debug for dump hash tabl */
 static unsigned int total_max;
 static unsigned int len_max;
 static int fsc_dump_htbl_proc_show(struct seq_file *m, void *v)
@@ -539,10 +484,8 @@ static int fsc_dump_htbl_proc_show(struct seq_file *m, void *v)
 		if (!list_empty(&fsc_htbl[hidx].head)) {
 			if (fsc_details)
 				seq_printf(m, "hidx: %d, cnt: %d\n", hidx, cnt);
-			/* cached list */
 			list_for_each_entry(fsc, &fsc_htbl[hidx].head, node) {
 				len = strlen(fsc->path);
-				/* check if need summary */
 				if (len > prefix_len && !strncmp(prefix, fsc->path, prefix_len) && summary_idx < FSC_SUMMARY_MAX) {
 					char package[FSC_PATH_MAX] = {0};
 					char *token = NULL, *end = NULL;
@@ -557,7 +500,6 @@ static int fsc_dump_htbl_proc_show(struct seq_file *m, void *v)
 						if (end) {
 							plen = strlen(token);
 
-							/* check if need allocate summary object */
 							for (i = 0; i < summary_idx; ++i) {
 								if (plen == summary[i]->plen && !strncmp(token, summary[i]->package, plen)) {
 									need_alloc = false;
@@ -583,7 +525,6 @@ static int fsc_dump_htbl_proc_show(struct seq_file *m, void *v)
 							}
 						}
 
-						/* summary package information */
 						for (i = 0; i < summary_idx; ++i) {
 							if (len > summary[i]->len && !strncmp(fsc->path, summary[i]->path, summary[i]->len)) {
 								++summary[i]->cnt;
@@ -608,7 +549,6 @@ static int fsc_dump_htbl_proc_show(struct seq_file *m, void *v)
 		total, atomic_read(&fsc_cur_used), total_max, len_max, jiffies);
 
 	if (summary_idx) {
-		/* dump summary and reset summary */
 		seq_printf(m, "Summary:\n");
 		for (i = 0; i < summary_idx; ++i) {
 			seq_printf(m, "\t[%d]: package: %s, absence file records: %u\n", i, summary[i]->package, summary[i]->cnt);
@@ -648,7 +588,6 @@ static int fsc_enable_store(const char *buf, const struct kernel_param *kp)
 	if (fsc_enable)
 		return 0;
 
-	/* if turn off, flush table */
 	for (hidx = 0; hidx < FSC_HASH_BUCKET; ++hidx) {
 		fsc_spin_lock(hidx);
 		if (!list_empty(&fsc_htbl[hidx].head)) {
@@ -695,10 +634,8 @@ static int period_reclaim(void *arg)
 				struct file_status_cache *fsc, *tmp;
 				list_for_each_entry_safe(fsc, tmp, &fsc_htbl[hidx].head, node) {
 					if (fsc) {
-						/* get rid of obj after 2 days (48 hours) passed */
 						int delta = (jiffies - fsc->last_ref_ts)/(HZ * 172800L);
 						if (delta) {
-							/* time to go home */
 							list_del(&fsc->node);
 							atomic_dec(&fsc_htbl[hidx].cnt);
 							list_add(&fsc->node, &period.head);
@@ -724,7 +661,6 @@ static int period_reclaim(void *arg)
 	return 0;
 }
 
-/* scan for out of limit fsc object */
 static int instcln_reclaim(void* args)
 {
 	unsigned int i = 0;
@@ -735,7 +671,6 @@ static int instcln_reclaim(void* args)
 	int target;
 
 	while (!kthread_should_stop()) {
-		/* always reset target before really reclaim */
 		target = -1;
 
 		if (!fsc_enable) {
@@ -743,14 +678,12 @@ static int instcln_reclaim(void* args)
 			continue;
 		}
 
-		/* step 1. find out which package is going to uninstall */
 		uninst_len = strlen(uninst_pkg);
 		if (unlikely(uninst_len)) {
 			uninst_ing = true;
 			goto redo;
 		}
 
-		/* step 2. find out which package over limit */
 		for (i = 0; target == -1 && i < fsc_allow_list_cur; ++i) {
 			if (atomic_read(&fsc_allow_list_cnt[fsc_allow_list[i].idx]) >= instcln.thres) {
 				target = i;
@@ -762,10 +695,8 @@ static int instcln_reclaim(void* args)
 			goto done;
 
 redo:
-		/* step 3. reclaim objs */
 		for (i = 0; i < FSC_HASH_BUCKET; ++i) {
 			fsc_spin_lock(i);
-			/* drop target fsc object */
 			if (!list_empty(&fsc_htbl[i].head)) {
 				struct file_status_cache *fsc, *tmp;
 				list_for_each_entry_safe(fsc, tmp, &fsc_htbl[i].head, node) {
@@ -794,7 +725,6 @@ redo:
 			}
 		}
 
-		/* step 4. check if any uninstall event happened during reclaim period */
 		if (uninst_ing)
 			uninst_pkg[0] = '\0';
 		uninst_len = strlen(uninst_pkg);
@@ -826,7 +756,7 @@ static int __init fsc_init(void)
 
 	/* init for period & instcln reclaimer */
 	INIT_LIST_HEAD(&period.head);
-	period.period = 1 * 60 * 60 * 1000; // 1 hour, ms
+	period.period = 1 * 60 * 60 * 1000;
 	period.tsk = kthread_run(period_reclaim, NULL, "fsc_period_reclaimer");
 	if (!period.tsk) {
 		pr_err("%s: init period reclaimer failed\n", __func__);
@@ -834,8 +764,8 @@ static int __init fsc_init(void)
 	}
 
 	INIT_LIST_HEAD(&instcln.head);
-	instcln.period = 1L * 60L * 60L * 1000L * 1000L; // 1 hour, us
-	instcln.thres = 10000; // per package should not cache more than this thres.
+	instcln.period = 1L * 60L * 60L * 1000L * 1000L;
+	instcln.thres = 10000;
 	instcln.path[0] = '\0';;
 	instcln.tsk = kthread_run(instcln_reclaim, instcln.path, "fsc_instcln_reclaimer");
 	if (!instcln.tsk) {

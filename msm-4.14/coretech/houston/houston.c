@@ -40,6 +40,11 @@
 #include <linux/oem/control_center.h>
 #endif
 
+#ifdef CONFIG_IM
+#include <linux/oem/im.h>
+#endif
+#include <../kernel/sched/sched.h>
+
 /* perf raw counter */
 #define ARMV8_PMCR_MASK 0x3f
 #define ARMV8_PMCR_E (1 << 0) /* Enable all counters */
@@ -81,8 +86,23 @@ module_param_named(log_lv, ht_log_lv, int, 0664);
 static int ais_enable = 0;
 module_param_named(ais_enable, ais_enable, int, 0664);
 
+static DEFINE_SPINLOCK(egl_buf_lock);
+#define EGL_BUF_MAX (128)
+static char egl_buf[EGL_BUF_MAX] = {0};
+
+static int ai_on = 1;
+module_param_named(ai_on, ai_on, int, 0664);
+
+static int render_pid;
+module_param_named(render_pid, render_pid, int, 0664);
+
 /* pmu */
 static int perf_ready = -1;
+
+#ifdef CONFIG_ONEPLUS_FG_OPT
+unsigned int ht_fuse_boost = 2;
+module_param_named(fuse_boost, ht_fuse_boost, uint, 0664);
+#endif
 
 /* perf notify */
 static struct ai_parcel parcel;
@@ -95,6 +115,11 @@ static DECLARE_WAIT_QUEUE_HEAD(ht_poll_waitq);
 /* render & rtg util*/
 static pid_t RenPid = -1;
 static int get_util(bool isRender, int *num);
+
+/* hwui boost online config switch */
+static int ht_hwui_boost_enable = 1;
+module_param_named(hwui_boost_enable, ht_hwui_boost_enable, int, 0664);
+
 /*
  * perf event list
  * A list chained with task which perf event created
@@ -166,18 +191,16 @@ module_param_named(bat_update_period_us, bat_update_period_us, ulong, 0664);
 
 extern void bq27541_force_update_current(void);
 
-/* ioctl retry count */
-#define HT_IOCTL_RETRY_MAX 128
-static int ht_ioctl_retry_count = 0;
-module_param_named(ioctl_retry_count, ht_ioctl_retry_count, int, 0664);
-
-/* brain status */
-static bool ht_brain_active = true;
-module_param_named(brain_active, ht_brain_active, bool, 0664);
-
 /* fps boost switch */
 static bool fps_boost_enable = true;
 module_param_named(fps_boost_enable, fps_boost_enable, bool, 0664);
+
+static bool fps_boost_force_enable;
+module_param_named(fps_boost_force_enable, fps_boost_force_enable, bool, 0664);
+
+/* trubo boost switch */
+static bool tb_enable = true;
+module_param_named(tb_enable, tb_enable, bool, 0664);
 
 /* freq hispeed */
 static bool cpufreq_hispeed_enable = false;
@@ -363,8 +386,10 @@ static inline const char* ht_ioctl_str(unsigned int cmd)
 	case HT_IOC_COLLECT: return "HT_IOC_COLLECT";
 	case HT_IOC_SCHEDSTAT: return "HT_IOC_SCHEDSTAT";
 	case HT_IOC_CPU_LOAD: return "HT_IOC_CPU_LOAD";
+	case HT_IOC_FPS_STABILIZER_UPDATE: return "HT_IOC_FPS_STABILIZER_UPDATE";
+	case HT_IOC_FPS_PARTIAL_SYS_INFO: return "HT_IOC_FPS_PARTIAL_SYS_INFO";
 	}
-	return "NONE";
+	return "UNKNOWN";
 }
 
 static inline int ht_get_temp(int monitor_idx)
@@ -511,6 +536,9 @@ static int perf_ready_store(const char *buf, const struct kernel_param *kp)
 	LIST_HEAD(release_pending);
 	struct task_struct* task, *next;
 
+	if (!ai_on)
+		return 0;
+
 	if (sscanf(buf, "%d\n", &val) <= 0)
 		return 0;
 
@@ -562,6 +590,128 @@ static struct kernel_param_ops perf_ready_ops = {
 	.get = perf_ready_show,
 };
 module_param_cb(perf_ready, &perf_ready_ops, NULL, 0664);
+
+static int egl_buf_store(const char *buf, const struct kernel_param *kp)
+{
+	char _buf[EGL_BUF_MAX] = {0};
+
+	if (strlen(buf) >= EGL_BUF_MAX)
+		return 0;
+
+	if (sscanf(buf, "%s\n", _buf) <= 0)
+		return 0;
+
+	spin_lock(&egl_buf_lock);
+	memcpy(egl_buf, _buf, EGL_BUF_MAX);
+	egl_buf[EGL_BUF_MAX - 1] = '\0';
+	spin_unlock(&egl_buf_lock);
+
+	return 0;
+}
+
+static int egl_buf_show(char *buf, const struct kernel_param *kp)
+{
+	char _buf[EGL_BUF_MAX] = {0};
+
+	spin_lock(&egl_buf_lock);
+	memcpy(_buf, egl_buf, EGL_BUF_MAX);
+	_buf[EGL_BUF_MAX - 1] = '\0';
+	spin_unlock(&egl_buf_lock);
+
+	return snprintf(buf, PAGE_SIZE, "%s\n", _buf);
+}
+
+static struct kernel_param_ops egl_buf_ops = {
+	.set = egl_buf_store,
+	.get = egl_buf_show,
+};
+module_param_cb(egl_buf, &egl_buf_ops, NULL, 0664);
+
+/* fps stable parameter, default -1 max */
+static int efps_max = -1;
+static int efps_pid = 0;
+static int expectfps = -1;
+static int efps_max_store(const char *buf, const struct kernel_param *kp)
+{
+	int val;
+	int pid;
+	int eval;
+	int ret;
+
+	ret = sscanf(buf, "%d,%d,%d\n", &pid, &val, &eval);
+	if (ret < 2)
+		return 0;
+
+	efps_pid = pid;
+	efps_max = val;
+	expectfps = (ret == 3) ? eval : -1;
+	return 0;
+}
+
+static int efps_max_show(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d,%d,%d\n", efps_pid, efps_max, expectfps);
+}
+
+static struct kernel_param_ops efps_max_ops = {
+	.set = efps_max_store,
+	.get = efps_max_show,
+};
+module_param_cb(efps_max, &efps_max_ops, NULL, 0664);
+
+/* fps boost strategy (fbs) */
+static int fbs_pid = -1;
+static int fbs_lv = -1;
+static int fps_boost_strategy_store(const char *buf, const struct kernel_param *kp)
+{
+	int pid;
+	int val;
+
+	if (sscanf(buf, "%d,%d\n", &pid, &val) <= 0)
+		return 0;
+
+	fbs_pid = pid;
+	fbs_lv = val;
+	return 0;
+}
+
+static int fps_boost_strategy_show(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d,%d\n", fbs_pid, fbs_lv);
+}
+
+static struct kernel_param_ops fps_boost_strategy_ops = {
+	.set = fps_boost_strategy_store,
+	.get = fps_boost_strategy_show,
+};
+module_param_cb(fps_boost_strategy, &fps_boost_strategy_ops, NULL, 0664);
+
+/* fps stabilizer update & online config update */
+static DECLARE_WAIT_QUEUE_HEAD(ht_fps_stabilizer_waitq);
+static char ht_online_config_buf[PAGE_SIZE];
+static bool ht_disable_fps_stabilizer_bat = true;
+module_param_named(disable_fps_stabilizer_bat, ht_disable_fps_stabilizer_bat, bool, 0664);
+
+static int ht_online_config_update_store(const char *buf, const struct kernel_param *kp)
+{
+	int ret;
+
+	ret = sscanf(buf, "%s\n", ht_online_config_buf);
+	ht_logi("fpsst: %d, %s\n", ret, ht_online_config_buf);
+	wake_up(&ht_fps_stabilizer_waitq);
+	return 0;
+}
+
+static int ht_online_config_update_show(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%s\n", ht_online_config_buf);
+}
+
+static struct kernel_param_ops ht_online_config_update_ops = {
+	.set = ht_online_config_update_store,
+	.get = ht_online_config_update_show,
+};
+module_param_cb(ht_online_config_update, &ht_online_config_update_ops, NULL, 0664);
 
 static inline void __ht_perf_event_enable(struct task_struct *task, int event_id)
 {
@@ -716,6 +866,7 @@ void ht_collect_perf_data(struct work_struct *work)
 				rtg_task->ravg.demand_scaled < base_util ||
 				rtg_task->rtg_peak < rtg_filter_cnt) {
 			list_del_init(&rtg_task->rtg_node);
+			im_unset_flag(rtg_task, IM_UX);
 			continue;
 		}
 
@@ -748,8 +899,7 @@ void ht_collect_perf_data(struct work_struct *work)
 	}
 
 	/* notify ai_scheduler that data collected */
-	if (likely(ht_brain_active))
-		wake_up(&ht_perf_waitq);
+	wake_up(&ht_perf_waitq);
 	put_task_struct(task);
 }
 
@@ -888,7 +1038,7 @@ static inline void do_cpufreq_boost_helper(
 static void do_fps_boost(unsigned int val, unsigned int period_us)
 {
 	int ais_active = ais_enable;
-	int i;
+	int i = 0;
 	int boost_cluster[HT_CLUSTERS] = {0};
 	unsigned int cur[HT_CLUSTERS] = {0}, orig[HT_CLUSTERS] = {0};
 	struct task_struct *t;
@@ -896,8 +1046,54 @@ static void do_fps_boost(unsigned int val, unsigned int period_us)
 	u64 ddr_target = 100; /* default value */
 	//struct cc_command cc;
 
-	if (!fps_boost_enable)
+	if (!fps_boost_enable && !fps_boost_force_enable)
 		return;
+
+	if (ccdm_enabled()) {
+		struct cc_command cc;
+
+		/* cpufreq part */
+		if (val > 0) {
+			for (i = 0; i < FPS_TARGET_NUM; ++i) {
+				if (boost_target[i] <= 0)
+					continue;
+				rcu_read_lock();
+				t = find_task_by_vpid(boost_target[i]);
+				if (t) {
+					++boost_cluster[cpu_to_clus(t->cpu)];
+					ht_logv(
+						"boost default target task %d %s on cpu %d\n",
+						t->pid, t->comm, t->cpu);
+				}
+				rcu_read_unlock();
+			}
+
+			atomic_inc(&boost_cnt);
+		}
+
+		/* ddrfreq part */
+
+		/* setup command */
+		memset(&cc, 0, sizeof(struct cc_command));
+		cc.pid = current->pid;
+		cc.prio = CC_PRIO_HIGH;
+		cc.period_us = period_us;
+		cc.group = CC_CTL_GROUP_GRAPHIC;
+		cc.category = CC_CTL_CATEGORY_FPS_BOOST;
+		cc.response = 0;
+		cc.leader = current->tgid;
+		cc.bind_leader = true;
+		cc.status = 0;
+		cc.type = val ? CC_CTL_TYPE_PERIOD : CC_CTL_TYPE_RESET;
+		for (i = 0; i < HT_CLUSTERS; ++i) {
+			if (boost_cluster[i])
+				cc.params[i] = val; // clus hint
+		}
+		cc.params[3] = 0; // TBD, do we still need ddr boost?
+
+		cc_tsk_process(&cc);
+		return;
+	}
 
 #ifdef CONFIG_AIGOV
 	if (aigov_hooked()) {
@@ -1031,7 +1227,7 @@ static int ht_fps_boost_store(const char *buf, const struct kernel_param *kp)
 	int ret;
 	u64 now;
 
-	if (!fps_boost_enable)
+	if (!fps_boost_enable && !fps_boost_force_enable)
 		return 0;
 
 	ret = sscanf(buf, "%u,%u,%u,%u,%u\n", &vals[0], &vals[1], &vals[2], &vals[3], &vals[4]);
@@ -1085,6 +1281,145 @@ static struct kernel_param_ops ht_fps_boost_ops = {
 	.set = ht_fps_boost_store,
 };
 module_param_cb(fps_boost, &ht_fps_boost_ops, NULL, 0220);
+
+static inline void tb_parse_req(
+	unsigned int tb_pol,
+	unsigned int tb_type,
+	unsigned int args[4])
+{
+	struct cc_command cc;
+
+	/* first deal with tagging request */
+	if (tb_pol == TB_POL_HOOK_API) {
+		switch (args[0]) {
+		case 0:
+			im_set_flag_current(IM_GL);
+			break;
+		case 1:
+			im_set_flag_current(IM_VK);
+			break;
+		default:
+			ht_logw("turbo boost not support this tag %u\n",
+				args[0]);
+			break;
+		}
+		return;
+	}
+
+	/* init default turbo boost command */
+	memset(&cc, 0, sizeof(struct cc_command));
+	cc.pid = current->pid;
+	cc.prio = CC_PRIO_HIGH;
+	cc.period_us = args[2] * 1000; /* us*/
+	cc.group = CC_CTL_GROUP_GRAPHIC;
+	cc.response = 0;
+	cc.status = 0;
+	cc.type = CC_CTL_TYPE_PERIOD;
+
+	switch (tb_pol) {
+	case TB_POL_FPS_BOOST:
+		cc.category = CC_CTL_CATEGORY_TB_FREQ_BOOST;
+		break;
+	case TB_POL_DEADLINE_NOTIFY:
+		cc.category = CC_CTL_CATEGORY_TB_FREQ_BOOST;
+		break;
+	case TB_POL_SF_NOTIFY:
+		cc.category = CC_CTL_CATEGORY_TB_PLACE_BOOST;
+		break;
+	default:
+		ht_logw("turbo boost not support this policy %u\n", tb_pol);
+		return;
+	}
+
+	switch (tb_type) {
+	case TB_TYPE_FREQ_BOOST:
+		{
+			int util = args[3];
+
+			cc.leader = current->tgid;
+			cc.bind_leader = true;
+
+			if (util > 0) {
+				/* TODO warp find cpus via tasks */
+				int boost_cluster[HT_CLUSTERS] = {0};
+				struct task_struct *t = NULL;
+				int i;
+
+				rcu_read_lock();
+
+				t = find_task_by_vpid(args[0]);
+				if (t) {
+					++boost_cluster[cpu_to_clus(t->cpu)];
+					cc_set_cpu_idle_block(t->cpu);
+				}
+				t = find_task_by_vpid(args[1]);
+				if (t) {
+					++boost_cluster[cpu_to_clus(t->cpu)];
+					cc_check_renice((void *) t);
+					cc_set_cpu_idle_block(t->cpu);
+				}
+				rcu_read_unlock();
+
+				for (i = 0; i < HT_CLUSTERS; ++i)
+					cc.params[i] =
+						boost_cluster[i] ? util : 0;
+
+				/* update boost statistic */
+				atomic_inc(&boost_cnt);
+			} else
+				cc.type = CC_CTL_TYPE_RESET;
+		}
+		break;
+	case TB_TYPE_PLACE_BOOST:
+		break;
+	case TB_TYPE_TAGGING:
+		/* TBD
+		 * dealed at first, but if want to tag tasks
+		 * for a period time, should send command
+		 * to control center
+		 */
+		return;
+	default:
+		ht_logw("turbo boost not support this type %u\n", tb_type);
+		return;
+	}
+
+	cc_tsk_process(&cc);
+}
+
+static int tb_ctl_store(const char *buf, const struct kernel_param *kp)
+{
+	unsigned int tb_pol = 0;
+	unsigned int tb_type = 0;
+	unsigned int args[4] = {0};
+
+	if (!fps_boost_force_enable) {
+		if (!fps_boost_enable)
+			return 0;
+		if (!tb_enable)
+			return 0;
+	}
+
+	if (sscanf(buf, "%u,%u,%u,%u,%u,%u\n",
+		&tb_pol, &tb_type,
+		&args[0], &args[1], &args[2], &args[3]) != 6) {
+		ht_loge("turbo boost params invalid. %s. IGNORED.\n", buf);
+		return 0;
+	}
+
+	ht_logv("turbo boost params: %u %u %u %u %u %u, from %s %d\n",
+		tb_pol, tb_type, args[0], args[1], args[2], args[3],
+		current->comm, current->pid);
+
+	tb_parse_req(tb_pol, tb_type, args);
+
+	return 0;
+}
+
+static struct kernel_param_ops tb_ctl_ops = {
+	.set = tb_ctl_store,
+};
+module_param_cb(tb_ctl, &tb_ctl_ops, NULL, 0220);
 
 void ht_register_kgsl_pwrctrl(void *pwr)
 {
@@ -1193,7 +1528,7 @@ static int ht_fps_data_sync_store(const char *buf, const struct kernel_param *kp
 
 	if (ret != 12) {
 		/* instead of return -EINVAL, just return 0 to keep fd connection keep working */
-		ht_loge("fps data params invalid. %s. IGNORED.\n", buf);
+		ht_loge("fps data params invalid. ret %d, %s. IGNORED.\n", ret, buf);
 		return 0;
 	}
 
@@ -1206,7 +1541,9 @@ static int ht_fps_data_sync_store(const char *buf, const struct kernel_param *kp
 	 * cached_fps should be always updated
 	 * rounding up
 	 */
-	atomic_set(&cached_fps[0], (fps_data[0] + 5)/ 10);
+	//atomic_set(&cached_fps[0], (fps_data[0] + 5)/ 10);
+	// use vsync duration replace old fps data
+	atomic_set(&cached_fps[0], (fps_data[7]));
 	atomic_set(&cached_fps[1], (fps_data[1] + 5)/ 10);
 
 	atomic64_set(&fps_align_ns, fps_align);
@@ -1253,8 +1590,8 @@ static int ht_fps_data_sync_store(const char *buf, const struct kernel_param *kp
 	monitor.buf->data[cur_idx][HT_FPS_4] = fps_data[3]; //appSwapDuration
 	monitor.buf->data[cur_idx][HT_FPS_5] = fps_data[4]; //appEnqueueDuration
 	monitor.buf->data[cur_idx][HT_FPS_6] = fps_data[5]; //sfTotalDuration
-	monitor.buf->data[cur_idx][HT_FPS_7] = fps_data[6]; //Vsync
-	monitor.buf->data[cur_idx][HT_FPS_8] = fps_data[7]; //sfPresentTime
+	monitor.buf->data[cur_idx][HT_FPS_7] = fps_data[6]; //sfPresentTime
+	monitor.buf->data[cur_idx][HT_FPS_8] = fps_data[7]; //vSync
 	monitor.buf->data[cur_idx][HT_FPS_PID] = fps_data[8]; //pid
 	monitor.buf->data[cur_idx][HT_FPS_ALIGN]= fps_align; //fps align ts
 
@@ -1314,7 +1651,7 @@ static void ht_collect_system_data(struct ai_parcel *p)
 	p->cpu_orig_max_freq_1 = pols[1] ? pols[1]->max : 0;
 	p->gpu_freq = gpwr? (int) kgsl_pwrctrl_active_freq(gpwr): 0;
 	ht_query_ddrfreq(&p->ddr_freq);
-	p->ddr_bw = 0; /* should be removed in the future */
+	p->ddr_voting = cc_get_expect_ddrfreq();
 	if (bat_query) {
 		ht_update_battery();
 		ret = power_supply_get_property(monitor.psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &prop);
@@ -1387,8 +1724,6 @@ static long ht_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long __us
 		schedule();
 		finish_wait(&ht_perf_waitq, &wait);
 		ht_collect_system_data(&parcel);
-		ht_ioctl_retry_count = 0;
-		ht_brain_active = true;
 		if (copy_to_user((struct ai_parcel __user *) arg, &parcel, sizeof(parcel)))
 			return 0;
 		break;
@@ -1484,17 +1819,65 @@ static long ht_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long __us
 			return 0;
 		break;
 	}
-	default:
-		++ht_ioctl_retry_count;
-		if (ht_ioctl_retry_count >= HT_IOCTL_RETRY_MAX) {
-			DEFINE_WAIT(wait);
-			ht_logw("disable support from ai brain\n");
-			/* block ai observer here */
-			ht_brain_active = false;
-			prepare_to_wait(&ht_perf_waitq, &wait, TASK_INTERRUPTIBLE);
-			schedule();
-			finish_wait(&ht_perf_waitq, &wait);
+	case HT_IOC_FPS_STABILIZER_UPDATE:
+	{
+		DEFINE_WAIT(wait);
+		prepare_to_wait(&ht_fps_stabilizer_waitq, &wait, TASK_INTERRUPTIBLE);
+		schedule();
+		finish_wait(&ht_fps_stabilizer_waitq, &wait);
+
+		ht_logi("fpsst: %s\n", ht_online_config_buf);
+
+		if (ht_online_config_buf[0] == '\0') {
+			// force invalid config
+			char empty[] = "{}";
+			copy_to_user((struct ht_fps_stabilizer_buf __user *) arg, &empty, strlen(empty));
+		} else {
+			copy_to_user((struct ht_fps_stabilizer_buf __user *) arg, &ht_online_config_buf, PAGE_SIZE);
 		}
+		break;
+	}
+	case HT_IOC_FPS_PARTIAL_SYS_INFO:
+	{
+		struct ht_partial_sys_info data;
+		union power_supply_propval prop = {0, };
+		int ret;
+
+		if (ht_disable_fps_stabilizer_bat) {
+			data.volt = data.curr = 0;
+		} else {
+			ht_update_battery();
+			ret = power_supply_get_property(monitor.psy, POWER_SUPPLY_PROP_VOLTAGE_NOW, &prop);
+			data.volt = ret >= 0? prop.intval: 0;
+			ret = power_supply_get_property(monitor.psy, POWER_SUPPLY_PROP_CURRENT_NOW, &prop);
+			data.curr = ret >= 0? prop.intval: 0;
+		}
+
+		// related to cpu cluster configuration
+		// clus 0
+		data.utils[0] = ht_utils[0].utils[0]? (u64) *(ht_utils[0].utils[0]): 0;
+		data.utils[1] = ht_utils[0].utils[1]? (u64) *(ht_utils[0].utils[1]): 0;
+		data.utils[2] = ht_utils[0].utils[2]? (u64) *(ht_utils[0].utils[2]): 0;
+		data.utils[3] = ht_utils[0].utils[3]? (u64) *(ht_utils[0].utils[3]): 0;
+		// clus 1
+		data.utils[4] = ht_utils[1].utils[0]? (u64) *(ht_utils[1].utils[0]): 0;
+		data.utils[5] = ht_utils[1].utils[1]? (u64) *(ht_utils[1].utils[1]): 0;
+		data.utils[6] = ht_utils[1].utils[2]? (u64) *(ht_utils[1].utils[2]): 0;
+		// clus 2
+		data.utils[7] = ht_utils[2].utils[0]? (u64) *(ht_utils[2].utils[0]): 0;
+
+		// pick skip-therm since not support shell-therm.
+		data.skin_temp = ht_get_temp_delay(HT_THERM_0);
+
+		if (copy_to_user((struct ht_partial_sys_info __user *) arg, &data, sizeof(struct ht_partial_sys_info)))
+			return 0;
+		break;
+	}
+	default:
+	{
+		// handle unsupported ioctl cmd
+		return -1;
+	}
 	}
 	return 0;
 }
@@ -1753,6 +2136,18 @@ static const struct file_operations ht_report_proc_fops = {
 	.release= single_release,
 };
 
+int ht_group_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, group_show, NULL);
+}
+
+static const struct file_operations ht_group_proc_fops = {
+	.open = ht_group_proc_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = single_release,
+};
+
 static int fps_sync_init(void)
 {
 	int rc;
@@ -1814,6 +2209,10 @@ void ht_update_enqueue_ts(struct task_struct *task)
 void ht_perf_notify(void)
 {
 	u64 time;
+	/* treat any notify task as UX */
+	im_set_flag_current(IM_UX);
+
+	render_pid = current->pid;
 
 	if (perf_ready <= 0)
 		return;
@@ -1941,6 +2340,13 @@ void ht_rtg_list_add_tail(struct task_struct *task)
 
 	time = ktime_to_us(ktime_get());
 
+	/* if calling too close, ignore it */
+	if (time < task->rtg_ts2 ||
+		time - task->rtg_ts2 <= 1000 /* 1 ms */)
+		return;
+
+	task->rtg_ts2 = time;
+
 	/* may need to handle overflow */
 	if (time < task->rtg_period_ts ||
 		time - task->rtg_period_ts >= 1000000 /* 1 sec */) {
@@ -1963,6 +2369,7 @@ void ht_rtg_list_add_tail(struct task_struct *task)
 	spin_lock(&ht_rtg_lock);
 	if (list_empty(&task->rtg_node))
 		list_add_tail(&task->rtg_node, &ht_rtg_head);
+	im_set_flag(task, IM_UX);
 	spin_unlock(&ht_rtg_lock);
 }
 EXPORT_SYMBOL(ht_rtg_list_add_tail);
@@ -1977,6 +2384,7 @@ void ht_rtg_list_del(struct task_struct *task)
 		ht_logv("rtg task del list: %s(%d) util: %d, peak: %d\n",
 			task->comm, task->pid, task->ravg.demand_scaled, task->rtg_peak);
 		list_del_init(&task->rtg_node);
+		im_unset_flag(task, IM_UX);
 	}
 	spin_unlock(&ht_rtg_lock);
 }
@@ -2079,6 +2487,7 @@ static int ht_init(void)
 	wake_up_process(monitor.thread);
 
 	proc_create("ht_report", S_IFREG | 0444, NULL, &ht_report_proc_fops);
+	proc_create("ht_group", S_IFREG | 0444, NULL, &ht_group_proc_fops);
 
 	fps_sync_init();
 	ht_perf_workq = alloc_ordered_workqueue("ht_wq", 0);

@@ -31,6 +31,7 @@
 #include <linux/prefetch.h>
 #include <linux/printk.h>
 #include <linux/dax.h>
+#include <linux/msm_drm_notify.h>
 
 #include <asm/tlbflush.h>
 #include <asm/div64.h>
@@ -43,6 +44,7 @@
 #include <linux/swapfile.h>
 #include <linux/pagevec.h>
 #include <linux/fs.h>
+#include <linux/page_ext.h>
 #include "memplus.h"
 
 #define PF_NO_TAIL(page, enforce) ({					\
@@ -52,6 +54,10 @@
 #define RD_SIZE 128
 #define DEBUG_TIME_INFO 0
 #define FEAT_RECLAIM_LIMIT 0
+#define GC_SIZE 1024
+#define DEBUG_GCD 0 /*print gcd info */
+#define GCD_SST 0 /* stress test */
+
 struct reclaim_stat {
 	unsigned nr_dirty;
 	unsigned nr_unqueued_dirty;
@@ -95,12 +101,24 @@ static struct task_struct *reclaimd_tsk = NULL;
 static struct task_struct *swapind_tsk = NULL;
 static DEFINE_SPINLOCK(rd_lock);
 
+static atomic64_t accu_display_on_jiffies = ATOMIC64_INIT(0);
+static struct notifier_block memplus_notify;
+static unsigned long display_on_jiffies;
+static pid_t proc[GC_SIZE] = { 0 };
+static struct task_struct *gc_tsk;
+static bool display_on = true;
+
 /* -1 = system free to use swap, 0 = disable retention, swap not available, 1 = enable retention */
 static int vm_memory_plus __read_mostly = 0;
 static unsigned long memplus_add_to_swap = 0;
 unsigned long coretech_reclaim_pagelist(struct list_head *page_list, struct vm_area_struct *vma, void *sc);
 unsigned long swapout_to_zram(struct list_head *page_list, struct vm_area_struct *vma);
 unsigned long swapout_to_disk(struct list_head *page_list, struct vm_area_struct *vma);
+
+static inline bool current_is_gcd(void)
+{
+	return current == gc_tsk;
+}
 
 bool ctech_current_is_swapind() {
 	return current == swapind_tsk;
@@ -346,12 +364,11 @@ static void __memplus_state_check(int cur_adj, int prev_adj, struct task_struct*
 	} else if (cur_adj == 0) {
 queue_swapin:
 		spin_lock(&task->signal->reclaim_state_lock);
-		/* swapin kicked in, don't reclaim within 2 secs */
-		task->signal->reclaim_timeout = jiffies + 2*HZ;
-
 		if (task->signal->swapin_should_readahead_m == RECLAIM_QUEUE) {
+			task->signal->reclaim_timeout = jiffies + 2*HZ;
 			task->signal->swapin_should_readahead_m = RECLAIM_STANDBY;
 		} else if (task->signal->swapin_should_readahead_m == RECLAIM_DONE) {
+			task->signal->reclaim_timeout = jiffies + 2*HZ;
 			task->signal->swapin_should_readahead_m = SWAPIN_QUEUE;
 			//trace_printk("Q-swapin %s (pid %d) (adj %d -> %d) (uid %d)\n", task->comm, task->pid, prev_adj, cur_adj, uid);
 			enqueue_reclaim_data(task->pid, prev_adj, &si);
@@ -536,6 +553,8 @@ static int memplus_reclaim_pte(pmd_t *pmd, unsigned long addr,
 	int isolated;
 	int reclaimed = 0;
 	int reclaim_type = rp->type;
+	bool check_event = current_is_gcd();
+	struct page_ext *page_ext;
 
 	split_huge_pmd(vma, addr, pmd);
 	if (pmd_trans_unstable(pmd) || !rp->nr_to_reclaim)
@@ -551,6 +570,16 @@ cont:
 		page = vm_normal_page(vma, addr, ptent);
 		if (!page)
 			continue;
+
+		if (check_event) {
+			page_ext = lookup_page_ext(page);
+			if (unlikely(!page_ext))
+				continue;
+
+			/* gc_tsk should respect countdown event */
+			if ((page_ext->next_event > 0) && (--(page_ext->next_event) > 0))
+				continue;
+		}
 
 		ClearPageWillneed(page);
 
@@ -590,6 +619,12 @@ cont:
 		reclaimed = swapout_to_disk(&page_list, vma);
 	else if (reclaim_type == TYPE_FREQUENT)
 		reclaimed = swapout_to_zram(&page_list, vma);
+	else {
+		if (!current_is_gcd())
+			pr_info_ratelimited("!! %s(%d) is reclaiming unexpected task type (%d)\n"
+					, current->comm, current->pid, reclaim_type);
+		reclaimed = swapout_to_zram(&page_list, vma);
+	}
 
 	rp->nr_reclaimed += reclaimed;
 	rp->nr_to_reclaim -= reclaimed;
@@ -644,7 +679,10 @@ static ssize_t reclaim_anon(struct task_struct *task, int prev_adj)
 #endif
 
 	spin_lock(&task->signal->reclaim_state_lock);
-
+	if (task->signal->swapin_should_readahead_m == GC_RECLAIM_QUEUE) {
+		spin_unlock(&task->signal->reclaim_state_lock);
+		goto gc_proceed;
+	}
 	/*TODO: additional handle for PF_EXITING do_exit()->exit_signal()*/
 	if (task->signal->swapin_should_readahead_m != RECLAIM_QUEUE) {
 		//trace_printk("EXIT reclaim: this task is either (reclaimed) or (adj 0 swapin)\n");
@@ -654,6 +692,7 @@ static ssize_t reclaim_anon(struct task_struct *task, int prev_adj)
 	task->signal->swapin_should_readahead_m = RECLAIM_DONE;
 	spin_unlock(&task->signal->reclaim_state_lock);
 
+gc_proceed:
 	/* TODO: do we need to use p = find_lock_task_mm(tsk); in case main thread got killed */
 	mm = get_task_mm(task);
 	if (!mm)
@@ -689,7 +728,7 @@ static ssize_t reclaim_anon(struct task_struct *task, int prev_adj)
 		if (vma->vm_flags & VM_LOCKED)
 			continue;
 
-		if (task->signal->swapin_should_readahead_m != RECLAIM_DONE)
+		if (!current_is_gcd() && task->signal->swapin_should_readahead_m != RECLAIM_DONE)
 			break;
 
 		rp.vma = vma;
@@ -762,7 +801,144 @@ static int reclaimd_fn(void *p)
 		if (kthread_should_stop())
 			break;
 	}
+	return 0;
+}
 
+/* do_swap_page() hook */
+static void ctech_memplus_next_event(struct page *page)
+{
+	unsigned long ret;
+	struct page_ext *page_ext;
+
+	/* skip if handled by reclaimd or current is swapind */
+	if (current->signal->reclaim_timeout)
+		return;
+
+	page_ext = lookup_page_ext(page);
+	if (unlikely(!page_ext))
+		return;
+
+	/* next_event value
+	 *  0 : gc always reclaim / default
+	 *  1 : gc at next event
+	 *  N : N <= 7, countdown N to do gc
+	 */
+	ret = (atomic64_read(&accu_display_on_jiffies)
+			+ (display_on ? (jiffies - display_on_jiffies) : 0)) / (3600 * HZ);
+	ret = ret >= 6 ? 1 : (7 - ret);
+
+	page_ext->next_event = ret;
+}
+
+static noinline void wait_for_suspend(void)
+{
+#if GCD_SST
+	return;
+#endif
+	/* wait until user-space process all freezed */
+	while (!pm_nosig_freezing) {
+#if DEBUG_GCD
+		pr_info("gc wait for suspend\n");
+#endif
+		/* suspend freezer only wake TASK_INTERRUPTIBLE */
+		set_current_state(TASK_INTERRUPTIBLE);
+		schedule();
+		atomic64_set(&accu_display_on_jiffies, 0);
+#if DEBUG_GCD
+		pr_info("gc finish waiting suspend\n");
+#endif
+	}
+}
+
+static int gc_fn(void *p)
+{
+	struct task_struct *tsk;
+	int idx, i;
+
+	set_freezable();
+	while (1) {
+		set_current_state(TASK_INTERRUPTIBLE);
+		freezable_schedule();
+
+		idx = 0;
+		memset(proc, 0, sizeof(proc));
+
+		rcu_read_lock();
+		for_each_process(tsk) {
+			if (tsk->flags & PF_KTHREAD)
+				continue;
+#if DEBUG_GCD
+			if (tsk->signal->reclaim_timeout)
+				pr_info("gc skip %s (pid %d uid %d, adj %d reclaim_time %ds before %llu %llu)\n"
+						, tsk->comm, tsk->pid, task_uid(tsk).val, tsk->signal->oom_score_adj
+						, (2*HZ + jiffies - tsk->signal->reclaim_timeout) / HZ, 2*HZ + jiffies
+						, tsk->signal->reclaim_timeout);
+#endif
+			/* skip if being handled by reclaimd */
+			if (tsk->signal->reclaim_timeout)
+				continue;
+
+			proc[idx] = tsk->pid;
+
+			if (++idx == GC_SIZE)
+				break;
+		}
+		rcu_read_unlock();
+
+		atomic64_set(&accu_display_on_jiffies, 0);
+		for (i = 0; i < idx; i++) {
+			int pid = proc[i];
+
+			if (pid == 0)
+				break;
+
+			wait_for_suspend();
+
+			rcu_read_lock();
+			tsk = find_task_by_vpid(pid);
+
+			if (!tsk) {
+				rcu_read_unlock();
+				continue;
+			}
+
+			get_task_struct(tsk);
+			rcu_read_unlock();
+#if DEBUG_GCD
+			if (task_uid(tsk).val >= AID_APP)
+				pr_info("gc processing %s (pid %d uid %d, adj %d)\n"
+						, tsk->comm, tsk->pid, task_uid(tsk).val, tsk->signal->oom_score_adj);
+#endif
+			spin_lock(&tsk->signal->reclaim_state_lock);
+			/* final check if handled by reclaimd */
+			if (tsk->signal->reclaim_timeout) {
+				spin_unlock(&tsk->signal->reclaim_state_lock);
+				put_task_struct(tsk);
+				continue;
+			}
+			/* change to special state GC_RECLAIM_QUEUE */
+			if (likely(tsk->signal->swapin_should_readahead_m == RECLAIM_STANDBY))
+				tsk->signal->swapin_should_readahead_m = GC_RECLAIM_QUEUE;
+			else
+				pr_info("pre-check task %s(%d) unexpected status %d"
+						, tsk->comm, tsk->pid, tsk->signal->swapin_should_readahead_m);
+			spin_unlock(&tsk->signal->reclaim_state_lock);
+
+			reclaim_anon(tsk, 0);
+
+			spin_lock(&tsk->signal->reclaim_state_lock);
+			if (unlikely(tsk->signal->swapin_should_readahead_m != GC_RECLAIM_QUEUE))
+				pr_info("post-check task %s(%d) unexpected status %d"
+						, tsk->comm, tsk->pid, tsk->signal->swapin_should_readahead_m);
+			tsk->signal->swapin_should_readahead_m = RECLAIM_STANDBY;
+			spin_unlock(&tsk->signal->reclaim_state_lock);
+
+			put_task_struct(tsk);
+		}
+
+		if (kthread_should_stop())
+			break;
+	}
 	return 0;
 }
 
@@ -776,6 +952,50 @@ void memplus_stop(void)
 		kthread_stop(swapind_tsk);
 		swapind_tsk = NULL;
 	}
+	if (gc_tsk) {
+		kthread_stop(gc_tsk);
+		gc_tsk = NULL;
+	}
+}
+
+static int memplus_notifier_callback(struct notifier_block *nb, unsigned long event, void *data)
+{
+	int blank;
+	struct msm_drm_notifier *evdata = data;
+
+	if (!evdata || (evdata->id != 0))
+		return 0;
+#if DEBUG_GCD
+	//if (evdata && evdata->data) {
+	//	blank =* (int* )(evdata->data);
+	//	printk("event = %d blank = %d", event, blank);
+	//}
+#endif
+	if (event == MSM_DRM_EARLY_EVENT_BLANK) {
+		blank = *(int *)(evdata->data);
+		switch (blank) {
+		case MSM_DRM_BLANK_UNBLANK:
+			display_on = true;
+			display_on_jiffies = jiffies;
+#if DEBUG_GCD
+			pr_info("display ON\n");
+#endif
+			break;
+		case MSM_DRM_BLANK_POWERDOWN:
+			atomic64_add((jiffies - display_on_jiffies), &accu_display_on_jiffies);
+#if DEBUG_GCD
+			pr_info("display OFF\n");
+#endif
+#if GCD_SST
+			wake_up_process(gc_tsk);
+#endif
+			display_on = false;
+			break;
+		default:
+			break;
+		}
+	}
+	return 0;
 }
 
 static int __init memplus_init(void)
@@ -796,10 +1016,27 @@ static int __init memplus_init(void)
 		pr_err("Failed to start swapind\n");
 		swapind_tsk = NULL;
 	} else {
+		swapind_tsk->signal->reclaim_timeout = 1;
 		//if (sched_setscheduler_nocheck(swapind_tsk, SCHED_FIFO, &param)) {
 		//	pr_warn("%s: failed to set SCHED_FIFO\n", __func__);
 		//}
 	}
+
+	gc_tsk = kthread_run(gc_fn, 0, "system_gcd");
+	if (IS_ERR(gc_tsk)) {
+		pr_err("Failed to start system_gcd\n");
+		gc_tsk = NULL;
+	}
+
+	memplus_notify.notifier_call = memplus_notifier_callback;
+#if defined(CONFIG_DRM_MSM)
+	msm_drm_register_client(&memplus_notify);
+#else
+	pr_err("cannot register display notifier, please FIX IT!!!!!!\n");
+#endif
+#if !defined(CONFIG_PAGE_EXTENSION)
+	pr_err("cannot use page extension, please FIX IT!!!!!!\n");
+#endif
 
 	set.current_is_swapind_cb = ctech_current_is_swapind;
 	set.memplus_check_isolate_page_cb = ctech_memplus_check_isolate_page;
@@ -808,6 +1045,7 @@ static int __init memplus_init(void)
 	set.memplus_move_swapcache_to_anon_lru_cb = ctech_memplus_move_swapcache_to_anon_lru;
 	set.memplus_state_check_cb = ctech_memplus_state_check;
 	set.__memplus_enabled_cb = ctech__memplus_enabled;
+	set.memplus_next_event_cb = ctech_memplus_next_event;
 
 	register_cb_set(&set);
 	return 0;
@@ -892,11 +1130,60 @@ static int memory_plus_test_worstcase_store(const char *buf, const struct kernel
 	return 0;
 }
 
+/* return value mapping:
+ * 0     - success
+ * ESRCH - no GC daemon
+ * EPERM - memplus is diabled by user
+ * EINVAL- invalid input
+ * EBUSY - triggered too frequently
+ */
+static int memory_plus_wake_gcd_store(const char *buf, const struct kernel_param *kp)
+{
+	static ktime_t last_wake;
+	unsigned int val;
+	ktime_t cur_ktime;
+	s64 elapsed_hr;
+
+	if (!gc_tsk)
+		return -ESRCH;
+	if (vm_memory_plus == 2 || vm_memory_plus == 0)
+		return -EPERM;
+	if (sscanf(buf, "%u\n", &val) <= 0)
+		return -EINVAL;
+
+	cur_ktime = ktime_get_boottime();
+	elapsed_hr = ktime_to_ms(ktime_sub(cur_ktime, last_wake)) / (MSEC_PER_SEC * 3600);
+
+#if DEBUG_GCD
+	pr_info("elapsed bootime %d sec, hr %d\n"
+			, ktime_to_ms(ktime_sub(cur_ktime, last_wake)) / MSEC_PER_SEC, elapsed_hr);
+	pr_info("elapsed display on jiffies %d sec\n"
+			, (atomic64_read(&accu_display_on_jiffies)
+				+ (display_on ? (jiffies - display_on_jiffies) : 0)) / HZ);
+#endif
+#if GCD_SST
+	wake_up_process(gc_tsk);
+#endif
+	/* 24hr control */
+	if (last_wake && elapsed_hr < 24)
+		return -EBUSY;
+
+	wake_up_process(gc_tsk);
+	last_wake = cur_ktime;
+
+	return 0;
+}
+
 static struct kernel_param_ops memory_plus_test_worstcase_ops = {
 	.set = memory_plus_test_worstcase_store,
 };
 
+static struct kernel_param_ops memory_plus_wake_gcd_ops = {
+	.set = memory_plus_wake_gcd_store,
+};
+
 module_param_cb(memory_plus_test_worstcase, &memory_plus_test_worstcase_ops, NULL, 0200);
+module_param_cb(memory_plus_wake_gcd, &memory_plus_wake_gcd_ops, NULL, 0644);
 
 module_param_named(memory_plus_enabled, vm_memory_plus, uint, S_IRUGO | S_IWUSR);
 module_param_named(memplus_add_to_swap, memplus_add_to_swap, ulong, S_IRUGO | S_IWUSR);

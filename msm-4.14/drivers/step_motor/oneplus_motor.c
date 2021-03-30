@@ -1276,13 +1276,6 @@ static void motor_run_work(struct work_struct* work)
 			} 
 		}
 
-		//else {
-			//MOTOR_LOG("motor up, set timeout as 1s");
-			//value = 1000000000;
-			
-			//nsecond = do_div(value, 1000000000);
-			//intsecond = (unsigned long) value;
-		//}
 
 		MOTOR_LOG("time value = %llu nsecond = %lu intsecond = %lu , whole_jonery_time : %lu \n", 
 		                value, nsecond, intsecond, chip->whole_jonery_time);
@@ -3000,7 +2993,7 @@ static void oneplus_motor_awake_init(struct oneplus_motor_chip* chip)
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 9, 0))
 	wake_lock_init(&chip->suspend_lock, WAKE_LOCK_SUSPEND, "motor_wakelock");
 #else
-	chip->suspend_ws = wakeup_source_register("motor_wakelock");
+	chip->suspend_ws = wakeup_source_register(chip->dev,"motor_wakelock");
 #endif
 }
 

@@ -11,6 +11,8 @@
 
 #define CC_CTL_NODE "cc_ctl"
 #define CC_TAG "control center: "
+
+#ifdef CONFIG_CONTROL_CENTER
 #define cc_logv(fmt...) \
 	do { \
 		if (cc_log_lv < 1) \
@@ -38,6 +40,14 @@
 
 #define cc_loge(fmt...) pr_err(CC_TAG fmt)
 #define cc_logd(fmt...) pr_debug(CC_TAG fmt)
+#else
+#define cc_logv(fmt...)
+#define cc_logi(fmt...)
+#define cc_logw(fmt...)
+#define cc_logw_ratelimited(fmt...)
+#define cc_loge(fmt...)
+#define cc_logd(fmt...)
+#endif
 
 enum CC_CTL_GROUP {
 	CC_CTL_GROUP_DEFAULT,
@@ -54,8 +64,8 @@ enum CC_CTL_CATEGORY {
 	CC_CTL_CATEGORY_CLUS_0_FREQ,
 	CC_CTL_CATEGORY_CLUS_1_FREQ,
 	CC_CTL_CATEGORY_CLUS_2_FREQ,
-	CC_CTL_CATEGORY_CPU_FREQ_BOOST,
-	CC_CTL_CATEGORY_DDR_VOTING_FREQ,
+	CC_CTL_CATEGORY_FPS_BOOST,
+	CC_CTL_CATEGORY_VOTING_DDRFREQ,
 	CC_CTL_CATEGORY_DDR_LOCK_FREQ,
 	CC_CTL_CATEGORY_SCHED_PRIME_BOOST,
 
@@ -65,6 +75,10 @@ enum CC_CTL_CATEGORY {
 	CC_CTL_CATEGORY_CLUS_1_FREQ_QUERY,
 	CC_CTL_CATEGORY_CLUS_2_FREQ_QUERY,
 	CC_CTL_CATEGORY_DDR_FREQ_QUERY,
+
+	/* Turbo Boost */
+	CC_CTL_CATEGORY_TB_FREQ_BOOST,
+	CC_CTL_CATEGORY_TB_PLACE_BOOST,
 
 	CC_CTL_CATEGORY_MAX
 };
@@ -101,4 +115,24 @@ enum CC_PRIO {
 extern void cc_process(struct cc_command* cc);
 extern void cc_tsk_process(struct cc_command* cc);
 extern void cc_boost_ts_collect(struct cc_boost_ts* source);
+extern void cc_check_renice(void *tsk);
+extern void cc_set_cpu_idle_block(int cpu);
+
+/* define for trubo boost */
+enum TB_POL {
+	TB_POL_FPS_BOOST,
+	TB_POL_DEADLINE_NOTIFY,
+	TB_POL_SF_NOTIFY,
+	TB_POL_HOOK_API,
+
+	TB_POL_MAX
+};
+
+enum TB_TYPE {
+	TB_TYPE_FREQ_BOOST,
+	TB_TYPE_PLACE_BOOST,
+	TB_TYPE_TAGGING,
+
+	TB_TYPE_MAX
+};
 #endif

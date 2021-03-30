@@ -408,7 +408,6 @@ static bool m1120_down_get_enable(dhall_data_t* dhall_data)
     return enable > 0 ? true : false;
 }
 
-//需要看看這個怎麼搞
 static void m1120_down_set_enable(dhall_data_t* dhall_data, bool enable)
 {
     dhall_data_t* p_hall_data = dhall_data;

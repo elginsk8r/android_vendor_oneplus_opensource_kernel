@@ -4,10 +4,6 @@ config OEM_BOOT_MODE
 	help
           detect oem boot mode  If unsure, say y.
 
-
-config WB_KERNEL_LOG
-	tristate "reserve kernel log to partition driver"
-	default n
-
 source "drivers/oneplus/coretech/Kconfig"
 source "drivers/oneplus/oneplus_healthinfo/Kconfig"
+source "drivers/oneplus/op_freezer/Kconfig"

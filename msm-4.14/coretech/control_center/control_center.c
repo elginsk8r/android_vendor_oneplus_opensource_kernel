@@ -16,13 +16,13 @@
 #include <linux/oem/control_center.h>
 #include <linux/oem/houston.h>
 #include <linux/oem/aigov.h>
+#include <linux/oem/im.h>
 
 #ifdef CONFIG_OPCHAIN
-#include <../coretech/uxcore/opchain_helper.h>
-#include <../coretech/uxcore/opchain_define.h>
+#include <oneplus/uxcore/opchain_helper.h>
+#include <linux/oem/opchain_define.h>
 #endif
 
-/* time measurement */
 #define CC_TIME_START(start) { \
 	if (cc_time_measure) \
 		start = ktime_get(); \
@@ -39,51 +39,196 @@
 static bool cc_time_measure = true;
 module_param_named(time_measure, cc_time_measure, bool, 0644);
 
-/* boost enable options */
 static bool cc_cpu_boost_enable = true;
 module_param_named(cpu_boost_enable, cc_cpu_boost_enable, bool, 0644);
 
 bool cc_ddr_boost_enable = true;
 module_param_named(ddr_boost_enable, cc_ddr_boost_enable, bool, 0644);
 
-//bool cc_ddr_lower_bound_enable = false;
-//module_param_named(ddr_lower_bound_enable, cc_ddr_lower_bound_enable, bool, 0644);
-//
-//bool cc_ddr_set_enable = false;
-//module_param_named(ddr_set_enable, cc_ddr_set_enable, bool, 0644);
-//
-///* FIXME
-// * this is for voting, should not named as lock_
-// */
-//bool cc_ddr_lock_enable = true;
-//module_param_named(ddr_lock_enable, cc_ddr_lock_enable, bool, 0644);
+static bool cc_fps_boost_enable = true;
+module_param_named(fps_boost_enable, cc_fps_boost_enable, bool, 0644);
 
-/* record */
+static bool cc_tb_freq_boost_enable = true;
+module_param_named(tb_freq_boost_enable, cc_tb_freq_boost_enable, bool, 0644);
+
+static bool cc_tb_place_boost_enable = true;
+module_param_named(tb_place_boost_enable, cc_tb_place_boost_enable, bool, 0644);
+
+static bool cc_tb_nice_last_enable = true;
+module_param_named(tb_nice_last_enable, cc_tb_nice_last_enable, bool, 0644);
+
+static int cc_tb_nice_last_period = 100;
+module_param_named(tb_nice_last_period, cc_tb_nice_last_period, int, 0644);
+
+static bool cc_tb_idle_block_enable = true;
+module_param_named(tb_idle_block_enable, cc_tb_idle_block_enable, bool, 0644);
+
+static int cc_tb_idle_block_period = 100;
+module_param_named(tb_idle_block_period, cc_tb_idle_block_period, int, 0644);
+
+static bool cc_ddr_dtsi_lower_bound_enable;
+static int ddr_dtsi_lower_bound_enable_store(
+	const char *buf,
+	const struct kernel_param *kp)
+{
+	int val;
+
+	if (sscanf(buf, "%d\n", &val) <= 0)
+		return 0;
+
+	cc_ddr_dtsi_lower_bound_enable = !!val;
+
+	aop_lock_ddr_freq(0);
+
+	return 0;
+}
+
+static int ddr_dtsi_lower_bound_enable_show(
+	char *buf,
+	const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", cc_ddr_dtsi_lower_bound_enable);
+}
+
+static struct kernel_param_ops ddr_dtsi_lower_bound_enable_ops = {
+	.set = ddr_dtsi_lower_bound_enable_store,
+	.get = ddr_dtsi_lower_bound_enable_show,
+};
+module_param_cb(
+	ddr_dtsi_lower_bound_enable,
+	&ddr_dtsi_lower_bound_enable_ops, NULL, 0664);
+
+atomic_t cc_expect_ddrfreq;
+unsigned long cc_get_expect_ddrfreq(void)
+{
+	return atomic_read(&cc_expect_ddrfreq);
+}
+
+static bool cc_ddr_voting_enable = true;
+static int ddr_voting_enable_store(
+	const char *buf,
+	const struct kernel_param *kp)
+{
+	int val;
+
+	if (sscanf(buf, "%d\n", &val) <= 0)
+		return 0;
+
+	cc_ddr_voting_enable = !!val;
+
+	aop_lock_ddr_freq(0);
+
+	return 0;
+}
+
+static int ddr_voting_enable_show(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", cc_ddr_voting_enable);
+}
+
+static struct kernel_param_ops ddr_voting_enable_ops = {
+	.set = ddr_voting_enable_store,
+	.get = ddr_voting_enable_show,
+};
+module_param_cb(ddr_voting_enable, &ddr_voting_enable_ops, NULL, 0664);
+
+bool cc_ddr_config_check(int config)
+{
+	if (config & CC_DDR_LOWER_BOUND)
+		return cc_ddr_dtsi_lower_bound_enable;
+	if (config & CC_DDR_VOTING)
+		return cc_ddr_voting_enable;
+	return false;
+}
+
+static bool ccdm_enable;
+static int ccdm_enable_store(const char *buf, const struct kernel_param *kp)
+{
+	int val;
+
+	if (sscanf(buf, "%d\n", &val) <= 0)
+		return 0;
+
+	ccdm_enable = !!val;
+
+	aop_lock_ddr_freq(0);
+
+	ccdm_reset();
+
+	return 0;
+}
+
+static int ccdm_enable_show(char *buf, const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", ccdm_enable);
+}
+
+static struct kernel_param_ops ccdm_enable_ops = {
+	.set = ccdm_enable_store,
+	.get = ccdm_enable_show,
+};
+module_param_cb(ccdm_enable, &ccdm_enable_ops, NULL, 0664);
+
+bool ccdm_enabled(void)
+{
+	return ccdm_enable;
+}
+
+struct cc_stat {
+	atomic64_t cnt[CC_CTL_CATEGORY_MAX];
+	atomic64_t tcnt[CC_CTL_CATEGORY_MAX];
+} cc_stat;
+
+static inline void cc_stat_inc(int idx)
+{
+	if (likely(idx >= 0 && idx < CC_CTL_CATEGORY_MAX))
+		atomic64_inc(&cc_stat.cnt[idx]);
+}
+
 static struct cc_record {
 	spinlock_t lock;
-	/* priority list */
 	struct list_head phead[CC_PRIO_MAX];
 } cc_record[CC_CTL_CATEGORY_MAX];
 
-/*
- * verbose output
- * lv: 0 -> verbose
- * lv: 1 -> info
- * lv: 2 -> wraning
- * lv: 3 -> error
- */
 static int cc_log_lv = 1;
 module_param_named(log_lv, cc_log_lv, int, 0644);
 
-/* ddr lock api */
-extern void aop_lock_ddr_freq(int lv);
+static void cc_queue_rq(struct cc_command *cc);
 
-/* boost ts information */
 static struct cc_boost_ts cbt[CC_BOOST_TS_SIZE];
 static int boost_ts_idx = 0;
 static DEFINE_SPINLOCK(boost_ts_lock);
 
-/* calling with lock held */
+static inline bool cc_is_reset(struct cc_command *cc)
+{
+	return cc->type == CC_CTL_TYPE_RESET ||
+		cc->type == CC_CTL_TYPE_RESET_NONBLOCK;
+}
+
+static inline bool cc_is_query(int category)
+{
+	return category >= CC_CTL_CATEGORY_CLUS_0_FREQ_QUERY
+		&& category <= CC_CTL_CATEGORY_DDR_FREQ_QUERY;
+}
+
+static inline bool cc_is_nonblock(struct cc_command *cc)
+{
+	bool nonblock = false;
+
+	if (cc->type >= CC_CTL_TYPE_ONESHOT_NONBLOCK) {
+		nonblock = true;
+		cc->type -= CC_CTL_TYPE_ONESHOT_NONBLOCK;
+		cc_queue_rq(cc);
+	}
+	return nonblock;
+}
+
+static inline void cc_remove_nonblock(struct cc_command *cc)
+{
+	if (cc->type >= CC_CTL_TYPE_ONESHOT_NONBLOCK)
+		cc->type -= CC_CTL_TYPE_ONESHOT_NONBLOCK;
+}
+
 static int boost_ts_get_idx(void) {
 	int idx = boost_ts_idx++;
 	return idx % CC_BOOST_TS_SIZE;
@@ -93,15 +238,35 @@ static void cc_boost_ts_update(struct cc_command* cc)
 {
 	u64 ts_us = ktime_to_us(ktime_get());
 	int idx = 0;
-	bool reset = cc->type == CC_CTL_TYPE_RESET || cc->type == CC_CTL_TYPE_RESET_NONBLOCK;
+	bool reset = cc_is_reset(cc);
 
-	if (cc->category != CC_CTL_CATEGORY_CLUS_1_FREQ)
+	if (cc->category != CC_CTL_CATEGORY_CLUS_1_FREQ &&
+		cc->category != CC_CTL_CATEGORY_FPS_BOOST &&
+		cc->category != CC_CTL_CATEGORY_TB_FREQ_BOOST)
 		return;
 
-	cc_logv("[%s] boost from %u group %u category %u type %u period %u min %llu max %llu\n",
-		reset? "Exit": "Enter",
-		cc->bind_leader? cc->leader: cc->pid,
-		cc->group, cc->category, cc->type, cc->period_us, cc->params[0], cc->params[1]);
+	if (cc->category == CC_CTL_CATEGORY_CLUS_1_FREQ) {
+		cc_logv("[%s] boost from %u group %u category %u type %u period %u min %llu max %llu\n",
+			reset ? "Exit" : "Enter",
+			cc->bind_leader ? cc->leader : cc->pid,
+			cc->group, cc->category, cc->type, cc->period_us, cc->params[0], cc->params[1]);
+	} else if (cc->category == CC_CTL_CATEGORY_FPS_BOOST) {
+		cc_logv(
+			"[%s] boost from %u group %u category %u type %u period %u hint %llu %llu %llu %llu\n",
+			reset ? "Exit" : "Enter",
+			cc->bind_leader ? cc->leader : cc->pid,
+			cc->group, cc->category, cc->type, cc->period_us,
+			cc->params[0], cc->params[1],
+			cc->params[2], cc->params[3]);
+	} else if (cc->category == CC_CTL_CATEGORY_TB_FREQ_BOOST) {
+		cc_logv(
+			"[%s] turbo boost from %u group %u category %u type %u period %u hint %llu %llu %llu %llu\n",
+			reset ? "Exit" : "Enter",
+			cc->bind_leader ? cc->leader : cc->pid,
+			cc->group, cc->category, cc->type, cc->period_us,
+			cc->params[0], cc->params[1],
+			cc->params[2], cc->params[3]);
+	}
 
 	spin_lock(&boost_ts_lock);
 
@@ -123,7 +288,6 @@ void cc_boost_ts_collect(struct cc_boost_ts* source)
 	spin_unlock(&boost_ts_lock);
 }
 
-/* cpufreq boost qos */
 enum cc_cpufreq_boost_lv {
 	CC_CPUFREQ_BOOST_LV_0 = 0,
 	CC_CPUFREQ_BOOST_LV_1,
@@ -134,13 +298,6 @@ enum cc_cpufreq_boost_lv {
 	CC_CPUFREQ_BOOST_LV_MAX
 };
 
-/* boost timestamp */
-
-/* debug */
-static bool old_version = false;
-module_param_named(old_version, old_version, bool, 0644);
-
-/* async work */
 #define CC_ASYNC_RQ_MAX (64)
 static struct cc_async_rq {
 	struct cc_command cc;
@@ -154,15 +311,9 @@ static struct list_head cc_request_list;
 static struct list_head cc_pending_list;
 static DEFINE_SPINLOCK(cc_async_lock);
 static struct workqueue_struct *cc_wq;
-
-extern void clk_get_ddr_freq(u64* val);
-extern bool cc_is_nonblock(struct cc_command* cc);
-
-static inline void cc_remove_nonblock(struct cc_command* cc)
-{
-	if (cc->type >= CC_CTL_TYPE_ONESHOT_NONBLOCK)
-		cc->type -= CC_CTL_TYPE_ONESHOT_NONBLOCK;
-}
+extern cc_cal_next_freq_with_extra_util(
+	struct cpufreq_policy *pol, unsigned int next_freq);
+extern void clk_get_ddr_freq(u64 *val);
 
 static void __adjust_cpufreq(
 	struct cpufreq_policy *pol, u32 min, u32 max, bool reset)
@@ -174,13 +325,11 @@ static void __adjust_cpufreq(
 
 	spin_lock(&pol->cc_lock);
 
-	/* quick check */
 	if (pol->cc_max == max && pol->cc_min == min && !reset) {
 		spin_unlock(&pol->cc_lock);
 		goto out;
 	}
 
-	/* cc max/min always inside current pol->max/min */
 	pol->cc_max = (pol->max >= max)? max: pol->max;
 	pol->cc_min = (pol->min <= min)? min: pol->min;
 	if (reset)
@@ -190,17 +339,14 @@ static void __adjust_cpufreq(
 
 	spin_unlock(&pol->cc_lock);
 
-	/* not update while current governor is not schedutil */
 	if (unlikely(!pol->cc_enable))
 		goto out;
 
-	/* trigger frequency change */
 	if (pol->fast_switch_enabled) {
 		next_freq = cpufreq_driver_fast_switch(pol, req_freq);
 		if (!next_freq || (next_freq == pol->cur))
 			goto out;
 
-		/* update cpufreq stat */
 		pol->cur = next_freq;
 		for_each_cpu(cpu, pol->cpus)
 			trace_cpu_frequency(next_freq, cpu);
@@ -213,7 +359,6 @@ out:
 		pol->cc_max, pol->cc_min, req_freq, orig_req_freq, next_freq, pol->cc_enable);
 }
 
-/* called with get_online_cpus() */
 static inline int cc_get_online_cpu(int start, int end)
 {
 	int idx = -1;
@@ -272,6 +417,26 @@ static void cc_adjust_cpufreq(struct cc_command* cc)
 	if (!cc_cpu_boost_enable)
 		return;
 
+	if (ccdm_enabled()) {
+		int type = CCDM_DEFAULT;
+
+		switch (cc->category) {
+		case CC_CTL_CATEGORY_CLUS_0_FREQ:
+			type = CCDM_CLUS_0_CPUFREQ;
+			break;
+		case CC_CTL_CATEGORY_CLUS_1_FREQ:
+			type = CCDM_CLUS_1_CPUFREQ;
+			break;
+		case CC_CTL_CATEGORY_CLUS_2_FREQ:
+			type = CCDM_CLUS_2_CPUFREQ;
+			break;
+		}
+
+		ccdm_update_hint_2(type, 0,
+			cc_is_reset(cc) ? INT_MAX : cc->params[1]);
+		return;
+	}
+
 #ifdef CONFIG_AIGOV
 	if (aigov_hooked()) {
 		switch (cc->category) {
@@ -301,15 +466,13 @@ static void cc_adjust_cpufreq(struct cc_command* cc)
 		return;
 	}
 
-	if (cc->type == CC_CTL_TYPE_RESET) {
+	if (cc_is_reset(cc)) {
 		min = 0;
 		max = UINT_MAX;
 		reset = true;
 	} else {
-		/* ONESHOT/PERIOD */
 		min = cc->params[0];
 		max = cc->params[1];
-		/* validate parameters */
 		if (min > max) {
 			cc_logw("cpufrq incorrect, min %u, max %u\n", min, max);
 			return;
@@ -319,70 +482,12 @@ static void cc_adjust_cpufreq(struct cc_command* cc)
 	cc->status = __cc_adjust_cpufreq(clus, min, max, reset);
 }
 
-static int __cc_adjust_cpufreq_boost(
-	u32 clus, u32 level)
-{
-	struct cpufreq_policy *pol;
-	u32 cur;
-	int idx;
-	int ret = 0;
-
-	get_online_cpus();
-
-	idx = cc_get_cpu_idx(clus);
-	if (idx == -1) {
-		cc_logw("can' get cpu idx, input cluster %u\n", clus);
-		ret = -1;
-		goto out;
-	}
-
-	pol = cpufreq_cpu_get(idx);
-	if (!pol) {
-		ret = -1;
-		cc_logw("can't get clus %d cpufreqp policy\n", idx);
-		goto out;
-	}
-
-	/* scale up if needed */
-	cur = pol->cur;
-	switch (level) {
-	case CC_CPUFREQ_BOOST_LV_0:
-		cur = 0; break; // not scale
-	case CC_CPUFREQ_BOOST_LV_1:
-		cur = cur + (cur >> 2); break; // scale 1.25
-	case CC_CPUFREQ_BOOST_LV_2:
-		cur = cur + (cur >> 1); break; // scale 1.5
-	case CC_CPUFREQ_BOOST_LV_3:
-		cur = cur + (cur >> 2) + (cur >> 1); break; // scale 1.75
-	case CC_CPUFREQ_BOOST_LV_4:
-		cur = cur + cur; break; // scale 2.0
-	case CC_CPUFREQ_BOOST_LV_MAX:
-		cur = pol->max; break; // jump to max
-	default: break; // no change
-	}
-
-	/* FIXME */
-	__adjust_cpufreq(pol, cur, INT_MAX, false);
-
-	cpufreq_cpu_put(pol);
-out:
-	put_online_cpus();
-	return ret;
-}
-
 static inline u64 cc_ddr_to_devfreq(u64 val)
 {
 	int i;
 	u64 ddr_devfreq_avail_freq[] = { 0, 2597, 2929, 3879, 5161, 5931, 6881, 7980 };
 	u64 ddr_aop_mapping_freq[] = { 0, 681, 768, 1017, 1353, 1555, 1804, 2092 };
 
-	/* map to devfreq whlie config is enabled */
-	//if (cc_ddr_set_enable || cc_ddr_lock_enable) {
-	//	for (i = ARRAY_SIZE(ddr_devfreq_avail_freq) - 1; i >= 0; --i) {
-	//		if (val >= ddr_aop_mapping_freq[i])
-	//			return ddr_devfreq_avail_freq[i];
-	//	}
-	//}
 	for (i = ARRAY_SIZE(ddr_devfreq_avail_freq) - 1; i >= 0; --i) {
 		if (val >= ddr_aop_mapping_freq[i])
 			return ddr_devfreq_avail_freq[i];
@@ -390,91 +495,96 @@ static inline u64 cc_ddr_to_devfreq(u64 val)
 	return val;
 }
 
-//u64 cc_cpu_find_ddr(int cpu)
-//{
-//	int i, len, idx = 0;
-//	u64 ddr, curr;
-//	struct cpufreq_policy *pol;
-//	u64 *tmp_cpu, *tmp_ddr;
-//	u64 *ddr_cluster0_options;
-//	u64 *ddr_cluster1_options;
-//
-//	u64 ddr_cluster0_vote_options[5] = {
-//		762, 1720, 2086, 2929, 3879
-//	};
-//	u64 ddr_cluster1_vote_options[9] = {
-//		762, 1720, 2086, 2929, 3879, 5161, 5931, 6881, 7980
-//	};
-//	u64 ddr_cluster0_lock_options[5] = {
-//		200, 451, 547, 768, 1017
-//	};
-//	u64 ddr_cluster1_lock_options[9] = {
-//		200, 451, 547, 768, 1017, 1353, 1555, 1804, 2092
-//	};
-//	u64 cpu_cluster0_options[5] = {
-//		300000, 768000, 1113600, 1478400, 1632000
-//	};
-//	u64 cpu_cluster1_options[9] = {
-//		300000, 710400, 825600, 1056000, 1286400, 1612800, 1804800, 2649600, 3000000
-//	};
-//
-//	if (cc_ddr_set_enable || cc_ddr_lock_enable) {
-//		ddr_cluster0_options = ddr_cluster0_vote_options;
-//		ddr_cluster1_options = ddr_cluster1_vote_options;
-//	} else {
-//		ddr_cluster0_options = ddr_cluster0_lock_options;
-//		ddr_cluster1_options = ddr_cluster1_lock_options;
-//	}
-//
-//	pol = cpufreq_cpu_get(cpu);
-//	if (unlikely(!pol))
-//		return 0;
-//	idx = (cpu > 3) ? 1 : 0;
-//	curr = pol->cur;
-//	if (idx) {
-//		tmp_cpu = cpu_cluster1_options;
-//		tmp_ddr = ddr_cluster1_options;
-//		len = ARRAY_SIZE(cpu_cluster1_options);
-//	} else {
-//		tmp_cpu = cpu_cluster0_options;
-//		tmp_ddr = ddr_cluster0_options;
-//		len = ARRAY_SIZE(cpu_cluster0_options);
-//	}
-//	for (i = len - 1; i >= 0; --i) {
-//		if (curr > tmp_cpu[i]) {
-//			ddr = tmp_ddr[min(i+1, len - 1)];
-//			break;
-//		}
-//	}
-//	cpufreq_cpu_put(pol);
-//	return ddr;
-//}
-
-static void cc_adjust_cpufreq_boost(struct cc_command* cc)
+void cc_set_cpu_idle_block(int cpu)
 {
-	u32 clus, level;
+	u64 next_ts;
+	int ccdm_idle_block_idx =
+		cpu + CCDM_TB_CPU_0_IDLE_BLOCK;
 
-	if (!cc_cpu_boost_enable)
+	if (!cc_tb_idle_block_enable)
 		return;
 
-	if (cc_is_nonblock(cc))
+	next_ts = get_jiffies_64() + cc_tb_idle_block_period;
+	ccdm_update_hint_1(ccdm_idle_block_idx, next_ts);
+}
+
+void cc_check_renice(void *tsk)
+{
+	struct task_struct *t = (struct task_struct *) tsk;
+	u64 next_ts;
+
+	if (unlikely(!im_ux(t)))
 		return;
 
-	switch (cc->category) {
-	case CC_CTL_CATEGORY_CLUS_0_FREQ: clus = 0; break;
-	case CC_CTL_CATEGORY_CLUS_1_FREQ: clus = 1; break;
-	case CC_CTL_CATEGORY_CLUS_2_FREQ: clus = 2; break;
-	default:
-		cc_logw("cpufreq query invalid, category %u\n", cc->category);
+	if (!cc_tb_nice_last_enable)
 		return;
+
+	if (unlikely(t->prio < 100))
+		return;
+
+	next_ts = get_jiffies_64() + cc_tb_nice_last_period;
+
+	if (likely(t->nice_effect_ts != next_ts)) {
+		t->nice_effect_ts = next_ts;
+		set_user_nice_no_cache(t, MIN_NICE);
 	}
+}
 
-	if (cc->type == CC_CTL_TYPE_RESET) {
-		level = 0;
-	} else
-		level = cc->params[0];
+static void cc_tb_freq_boost(struct cc_command *cc)
+{
+	struct cpufreq_policy *pol;
+	int clus, cpu;
+	unsigned int next_freq;
 
-	cc->status = __cc_adjust_cpufreq_boost(clus, level);
+	if (!cc_tb_freq_boost_enable)
+		return;
+
+	if (cc_is_reset(cc))
+		ccdm_update_hint_3(CCDM_TB_FREQ_BOOST, 0, 0, 0);
+	else
+		ccdm_update_hint_3(CCDM_TB_FREQ_BOOST,
+				cc->params[0], cc->params[1], cc->params[2]);
+
+	get_online_cpus();
+	for (clus = 0; clus < 3; ++clus) {
+		if (!cc->params[clus])
+			continue;
+
+		pol = cpufreq_cpu_get(cc_get_cpu_idx(clus));
+		if (unlikely(!pol) || unlikely(!pol->cc_enable))
+			continue;
+
+		next_freq =
+			cc_cal_next_freq_with_extra_util(pol, pol->req_freq);
+
+		if (pol->fast_switch_enabled) {
+			next_freq = cpufreq_driver_fast_switch(pol, next_freq);
+			if (!next_freq || (next_freq == pol->cur)) {
+				cpufreq_cpu_put(pol);
+				continue;
+			}
+
+			pol->cur = next_freq;
+			for_each_cpu(cpu, pol->cpus)
+				trace_cpu_frequency(next_freq, cpu);
+			cpufreq_stats_record_transition(pol, next_freq);
+		} else {
+			cpufreq_driver_target(pol, next_freq, CPUFREQ_RELATION_H);
+		}
+		cpufreq_cpu_put(pol);
+	}
+	put_online_cpus();
+}
+
+static void cc_tb_place_boost(struct cc_command *cc)
+{
+	if (!cc_tb_place_boost_enable)
+		return;
+
+	if (cc_is_reset(cc))
+		ccdm_update_hint_1(CCDM_TB_PLACE_BOOST, 0);
+	else
+		ccdm_update_hint_1(CCDM_TB_PLACE_BOOST, 1);
 }
 
 static void cc_query_cpufreq(struct cc_command* cc)
@@ -522,14 +632,11 @@ bool cc_is_ddrfreq_related(const char* name)
 	if (!unlikely(name))
 		return false;
 
-	/* ddrfreq voting device */
-	//CC_DDRFREQ_CHECK(name, "soc:qcom,gpubw");
+	CC_DDRFREQ_CHECK(name, "soc:qcom,gpubw");
 	CC_DDRFREQ_CHECK(name, "soc:qcom,cpu-llcc-ddr-bw");
 	CC_DDRFREQ_CHECK(name, "soc:qcom,cpu4-cpu-ddr-latfloor");
 	CC_DDRFREQ_CHECK(name, "soc:qcom,cpu0-llcc-ddr-lat");
 	CC_DDRFREQ_CHECK(name, "soc:qcom,cpu4-llcc-ddr-lat");
-	//CC_DDRFREQ_CHECK(name, "aa00000.qcom,vidc:arm9_bus_ddr");
-	//CC_DDRFREQ_CHECK(name, "aa00000.qcom,vidc:venus_bus_ddr");
 	return false;
 }
 
@@ -538,7 +645,6 @@ static inline u64 query_ddrfreq(void)
 	u64 val;
 	clk_get_ddr_freq(&val);
 	val /= 1000000;
-	/* process for easy deal with */
 	if (val == 1018) val = 1017;
 	else if (val == 1355) val = 1353;
 	else if (val == 1805) val = 1804;
@@ -551,42 +657,7 @@ static void cc_query_ddrfreq(struct cc_command* cc)
 	cc->response = query_ddrfreq();
 }
 
-atomic_t cc_expect_ddrfreq;
 #define CC_DDR_RESET_VAL 0
-//static void cc_adjust_ddr_freq(struct cc_command *cc)
-//{
-//	u64 val = cc->params[0];
-//	u64 cur;
-//
-//	if (!cc_ddr_boost_enable)
-//		return;
-//
-//	val = cc_ddr_to_devfreq(val);
-//
-//	if (cc_is_nonblock(cc))
-//		return;
-//
-//	if (cc_ddr_lower_bound_enable) {
-//		val = max(cc_cpu_find_ddr(0), val);
-//		val = max(cc_cpu_find_ddr(4), val);
-//	}
-//
-//	if (cc->type == CC_CTL_TYPE_RESET)
-//		val = CC_DDR_RESET_VAL;
-//
-//	/* FIXME
-//	 * check cur & val not guarantee ddrfreq is locked or not */
-//	if (cc_ddr_set_enable || cc_ddr_lock_enable) {
-//		atomic_set(&cc_expect_ddrfreq, val);
-//	} else {
-//		/* check if need update */
-//		cur = query_ddrfreq();
-//
-//		if (cur != val)
-//			aop_lock_ddr_freq(val);
-//	}
-//}
-
 static void cc_adjust_ddr_voting_freq(struct cc_command *cc)
 {
 	u64 val = cc->params[0];
@@ -619,7 +690,6 @@ static void cc_adjust_ddr_lock_freq(struct cc_command *cc)
 	if (cc->type == CC_CTL_TYPE_RESET)
 		val = CC_DDR_RESET_VAL;
 
-	/* check if need update */
 	cur = query_ddrfreq();
 
 	if (cur != val)
@@ -628,14 +698,16 @@ static void cc_adjust_ddr_lock_freq(struct cc_command *cc)
 
 static void cc_adjust_sched(struct cc_command *cc)
 {
+#ifdef CONFIG_OPCHAIN
 	struct task_struct *task = NULL;
 	pid_t pid = cc->params[0];
+#endif
 
 	if (cc_is_nonblock(cc))
 		return;
 
 #ifdef CONFIG_OPCHAIN
-	if (cc->type == CC_CTL_TYPE_RESET) {
+	if (cc_is_reset(cc)) {
 		opc_set_boost(0);
 		return;
 	}
@@ -670,11 +742,9 @@ void cc_process(struct cc_command* cc)
 		cc_logv("cpufreq: type: %u, cluster: 2 target: %llu\n", cc->type, cc->params[0]);
 		cc_adjust_cpufreq(cc);
 		break;
-	case CC_CTL_CATEGORY_CPU_FREQ_BOOST:
-		cc_logv("cpufreq_boost: type: %u, cluster: %llu target: %llu\n", cc->type, cc->params[0], cc->params[1]);
-		cc_adjust_cpufreq_boost(cc);
+	case CC_CTL_CATEGORY_FPS_BOOST:
 		break;
-	case CC_CTL_CATEGORY_DDR_VOTING_FREQ:
+	case CC_CTL_CATEGORY_VOTING_DDRFREQ:
 		cc_logv("ddrfreq voting: type: %u, target: %llu\n", cc->type, cc->params[0]);
 		cc_adjust_ddr_voting_freq(cc);
 		break;
@@ -702,6 +772,18 @@ void cc_process(struct cc_command* cc)
 		cc_query_ddrfreq(cc);
 		cc_logv("ddrfreq query: type: %u, freq: %llu\n", cc->type, cc->response);
 		break;
+	case CC_CTL_CATEGORY_TB_FREQ_BOOST:
+		cc_logv("tb_freq_boost: type: %u, hint %llu %llu %llu %llu\n",
+			cc->type, cc->params[0], cc->params[1],
+			cc->params[2], cc->params[3]);
+		cc_tb_freq_boost(cc);
+		break;
+	case CC_CTL_CATEGORY_TB_PLACE_BOOST:
+		cc_logv("tb_place_boost: type: %u, hint %llu %llu %llu\n",
+			cc->type, cc->params[0], cc->params[1],
+			cc->params[2]);
+		cc_tb_place_boost(cc);
+		break;
 	default:
 		cc_logw("category %d not support\n", cc->category);
 		break;
@@ -723,7 +805,6 @@ static inline struct cc_command* find_highest_cc_nolock(int category)
 	struct cc_command *cc = NULL;
 	int prio;
 
-	/* find the highest priority request to perform */
 	for (prio = CC_PRIO_HIGH; !cc && prio < CC_PRIO_MAX; ++prio) {
 		if (!list_empty(&cc_record[category].phead[prio])) {
 			list_for_each_entry(data, &cc_record[category].phead[prio], node) {
@@ -735,7 +816,6 @@ static inline struct cc_command* find_highest_cc_nolock(int category)
 	return cc;
 }
 
-/* find the highest priority request to perform */
 static struct cc_command* find_highest_cc(int category)
 {
 	struct cc_command* cc;
@@ -759,10 +839,6 @@ static void cc_record_acq(int category, struct cc_command* cc)
 		return;
 	}
 
-	/*
-	 * apply change
-	 * if high_cc not equal to cc, it should be applied earlier
-	 */
 	if (high_cc == cc)
 		cc_process(high_cc);
 }
@@ -772,15 +848,12 @@ static void cc_record_rel(int category, struct cc_command *cc)
 	struct cc_command* next_cc = find_highest_cc(category);
 	bool is_nonblock = cc->type >= CC_CTL_TYPE_ONESHOT_NONBLOCK;
 
-	/* update reset type */
 	cc->type = is_nonblock? CC_CTL_TYPE_RESET_NONBLOCK: CC_CTL_TYPE_RESET;
 	if (next_cc) {
-		/* apply next since we detach the highest before */
 		cc_logv("got pending request, re-apply\n");
 		dump_cc(next_cc, __func__, "next request");
 		cc_process(next_cc);
 	} else {
-		/* no request pending, reset finally */
 		cc_logv("no pending request, release\n");
 		dump_cc(cc, __func__, "reset request");
 		cc_process(cc);
@@ -791,9 +864,7 @@ static void cc_record_init(void)
 {
 	int i, j;
 
-	/* init cc_record */
 	for (i = 0; i < CC_CTL_CATEGORY_MAX; ++i) {
-		/* assign acquire and release */
 		spin_lock_init(&cc_record[i].lock);
 		for (j = 0; j < CC_PRIO_MAX; ++j)
 			INIT_LIST_HEAD(&cc_record[i].phead[j]);
@@ -807,24 +878,19 @@ static void cc_tsk_acq(struct cc_tsk_data* data)
 	u32 category;
 	int prio;
 
-	/* update boost ts */
-	cc_boost_ts_update(cc);
-
 	current->cc_enable = true;
 
-	/* add into cc_record */
-	/* TODO check category & prio value */
 	category = data->cc.category;
 	prio = data->cc.prio;
 	cc = &data->cc;
 	delay_us = cc->period_us;
 
+	cc_boost_ts_update(cc);
+
 	dump_cc(cc, __func__, "current request");
 
-	/* if already inside list, detach first */
 	spin_lock(&cc_record[category].lock);
 	if (!list_empty(&data->node)) {
-		/* cancel queued delayed work first */
 		cancel_delayed_work(&data->dwork);
 		list_del_init(&data->node);
 		dump_cc(cc, __func__, "[detach]");
@@ -833,11 +899,11 @@ static void cc_tsk_acq(struct cc_tsk_data* data)
 	dump_cc(cc, __func__, "[attach]");
 	spin_unlock(&cc_record[category].lock);
 
-	/* trigger system control */
 	cc_record_acq(category, cc);
 
-	/* queue delay work for release */
 	queue_delayed_work(cc_wq, &data->dwork, usecs_to_jiffies(delay_us));
+
+	cc_stat_inc(category);
 }
 
 static void cc_tsk_rel(struct cc_tsk_data* data)
@@ -846,15 +912,12 @@ static void cc_tsk_rel(struct cc_tsk_data* data)
 	struct cc_command* high_cc;
 	u32 category = cc->category;
 
-	/* update boost ts */
 	cc_boost_ts_update(cc);
 
-	/* detach first */
 	dump_cc(cc, __func__, "current request");
 
 	spin_lock(&cc_record[category].lock);
 	high_cc = find_highest_cc_nolock(category);
-	/* detach first */
 	if (!list_empty(&data->node)) {
 		cancel_delayed_work(&data->dwork);
 		list_del_init(&data->node);
@@ -864,13 +927,11 @@ static void cc_tsk_rel(struct cc_tsk_data* data)
 	}
 
 	if (cc != high_cc) {
-		/* no need to worry, just detach and return */
 		spin_unlock(&cc_record[category].lock);
 		return;
 	}
 	spin_unlock(&cc_record[category].lock);
 
-	/* trigger system control */
 	cc_record_rel(category, cc);
 }
 
@@ -879,7 +940,6 @@ static void cc_delay_rel(struct work_struct *work)
 	struct cc_tsk_data* data = container_of(work, struct cc_tsk_data, dwork.work);
 	struct cc_command* cc = &data->cc;
 
-	/* delay work no need to use nonblock call */
 	cc->type = CC_CTL_TYPE_RESET;
 	cc_tsk_rel(data);
 }
@@ -894,7 +954,6 @@ static struct cc_tsk_data* cc_init_ctd(void)
 		return NULL;
 
 	for (i = 0; i < CC_CTL_CATEGORY_MAX; ++i) {
-		/* init all category control */
 		INIT_LIST_HEAD(&ctd[i].node);
 		INIT_DELAYED_WORK(&ctd[i].dwork, cc_delay_rel);
 	}
@@ -905,8 +964,6 @@ static inline struct cc_command* get_tsk_cc(bool bind_leader, u32 category)
 {
 	struct task_struct* task = bind_leader? current->group_leader: current;
 
-	/* FIXME may be race */
-	/* init ctd */
 	if (!task->ctd) {
 		task->ctd = cc_init_ctd();
 		if (!task->ctd) {
@@ -929,7 +986,7 @@ static inline struct cc_tsk_data* get_tsk_data(bool bind_leader, u32 category)
 static inline int cc_tsk_copy(struct cc_command* cc, bool copy_to_user)
 {
 	u32 category = cc->category;
-	/* TODO dynamic allocate later */
+
 	struct cc_command* tskcc = get_tsk_cc(cc->bind_leader, category);
 
 	if (!tskcc)
@@ -945,30 +1002,24 @@ static inline int cc_tsk_copy(struct cc_command* cc, bool copy_to_user)
 
 void cc_tsk_process(struct cc_command* cc)
 {
-	u32 type = cc->type;
 	u32 category = cc->category;
 
-	/* query can return first */
-	if (category >= CC_CTL_CATEGORY_CLUS_0_FREQ_QUERY) {
+	if (cc_is_query(category)) {
 		cc_process(cc);
 		return;
 	}
 
-	/* copy cc */
 	if (cc_tsk_copy(cc, false))
 		return;
 
-	if (type == CC_CTL_TYPE_RESET ||
-		type == CC_CTL_TYPE_RESET_NONBLOCK)
+	if (cc_is_reset(cc))
 		cc_tsk_rel(get_tsk_data(cc->bind_leader, category));
 	else
 		cc_tsk_acq(get_tsk_data(cc->bind_leader, category));
 
-	/* copy back to userspace cc */
 	cc_tsk_copy(cc, true);
 }
 
-/* for fork and exit, use void* to avoid include sched.h in control_center.h */
 void cc_tsk_init(void* ptr)
 {
 	struct task_struct *task = (struct task_struct*) ptr;
@@ -991,8 +1042,6 @@ void cc_tsk_free(void* ptr)
 
 	task->cc_enable = false;
 
-	/* TODO free and reset. If needed */
-	/* detach all */
 	for (category = 0; category < CC_CTL_CATEGORY_MAX; ++category) {
 		bool need_free = false;
 		cc_logv("%s: pid: %s(%d) free category %d\n",
@@ -1009,11 +1058,15 @@ void cc_tsk_free(void* ptr)
 			cc_logv("%s: pid: %s(%d) free category %d, need update.\n",
 				__func__, task->comm, task->pid, category);
 			cancel_delayed_work_sync(&data[category].dwork);
-			/* since we're going to free ctd, we need to force set type to blocked version */
 			data[category].cc.type = CC_CTL_TYPE_RESET;
 
 			cc_record_rel(category, &data[category].cc);
 		}
+	}
+
+	if (task->ctd) {
+		kfree(task->ctd);
+		task->ctd = NULL;
 	}
 }
 
@@ -1054,10 +1107,7 @@ static long cc_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long __us
 			if (copy_from_user(&cc, (struct cc_command *) arg, sizeof(struct cc_command)))
 				goto err_out;
 
-			if (old_version)
-				cc_process(&cc);
-			else
-				cc_tsk_process(&cc);
+			cc_tsk_process(&cc);
 
 			if (copy_to_user((struct cc_command *) arg, &cc, sizeof(struct cc_command)))
 				goto err_out;
@@ -1083,7 +1133,6 @@ static const struct file_operations cc_ctl_fops = {
 	.llseek = seq_lseek,
 };
 
-/* TODO try to simplify the register flow */
 static dev_t cc_ctl_dev;
 static struct class *driver_class;
 static struct cdev cdev;
@@ -1152,7 +1201,6 @@ static void __cc_attach_rq(struct cc_async_rq *rq, struct list_head* head)
 
 static void cc_release_rq(struct cc_async_rq* rq, struct list_head* head)
 {
-	/* clean before release */
 	memset(&rq->cc, 0, sizeof (struct cc_command));
 	__cc_attach_rq(rq, head);
 }
@@ -1164,7 +1212,6 @@ static void __cc_queue_rq(struct cc_async_rq* rq, struct list_head* head)
 
 static void cc_work(struct work_struct *work)
 {
-	/* time related */
 	ktime_t begin, end;
 	s64 t;
 	static s64 tmax = 0;
@@ -1174,7 +1221,6 @@ static void cc_work(struct work_struct *work)
 
 	CC_TIME_START(begin);
 
-	/* main loop */
 	cc_process(&rq->cc);
 
 	cc_release_rq(rq, &cc_request_list);
@@ -1188,7 +1234,6 @@ static int cc_worker(void* arg)
 	s64 t;
 	static s64 tmax = 0;
 
-	/* perform async system resousrce adjustment */
 	while (!kthread_should_stop()) {
 		struct cc_async_rq *rq;
 
@@ -1198,7 +1243,6 @@ redo:
 		if (!rq) {
 			goto finish;
 		}
-		/* main loop */
 		cc_process(&rq->cc);
 
 		cc_release_rq(rq, &cc_request_list);
@@ -1207,7 +1251,6 @@ redo:
 finish:
 		CC_TIME_END(begin, end, t, tmax);
 
-		/* sleep for next wake up */
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule();
 	}
@@ -1225,40 +1268,24 @@ static void cc_queue_rq(struct cc_command *cc)
 	memcpy(&rq->cc, cc, sizeof(struct cc_command));
 
 	if (likely(cc_wq)) {
-		/* if support workqueue, using workqueue */
 		queue_work(cc_wq, &rq->work);
 	} else if (likely(cc_worker_task)) {
-		/* if support worker, using worker */
 		__cc_queue_rq(rq, &cc_pending_list);
 		wake_up_process(cc_worker_task);
 	} else {
-		/* fall back to original version */
 		cc_logw_ratelimited("cc command fall back\n");
 		cc_process(&rq->cc);
 		cc_release_rq(rq, &cc_request_list);
 	}
 }
 
-bool cc_is_nonblock(struct cc_command* cc)
-{
-	bool nonblock = false;
-	if (cc->type >= CC_CTL_TYPE_ONESHOT_NONBLOCK) {
-		nonblock = true;
-		cc->type -= CC_CTL_TYPE_ONESHOT_NONBLOCK;
-		cc_queue_rq(cc);
-	}
-	return nonblock;
-}
-
 static void cc_worker_init(void)
 {
 	int i;
 
-	/* init for request/ pending/ lock */
 	INIT_LIST_HEAD(&cc_request_list);
 	INIT_LIST_HEAD(&cc_pending_list);
 
-	/* init requests */
 	for (i = 0; i < CC_ASYNC_RQ_MAX; ++i) {
 		INIT_LIST_HEAD(&cc_async_rq[i].node);
 		INIT_WORK(&cc_async_rq[i].work, cc_work);
@@ -1285,7 +1312,6 @@ static int cc_dump_list_show(char *buf, const struct kernel_param *kp)
 
 	spin_lock(&cc_async_lock);
 
-	/* request list */
 	size = 0;
 	list_for_each_entry(rq, &cc_request_list, node) {
 		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "%d ", rq->idx);
@@ -1295,7 +1321,6 @@ static int cc_dump_list_show(char *buf, const struct kernel_param *kp)
 		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "\n", rq->idx);
 	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "request list: size: %d\n", size);
 
-	/* pending list */
 	size = 0;
 	list_for_each_entry(rq, &cc_pending_list, node) {
 		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "%d ", rq->idx);
@@ -1322,7 +1347,6 @@ static int cc_dump_status_show(char *buf, const struct kernel_param *kp)
 	int i, idx;
 	u64 val;
 
-	/* dump cpufreq control status */
 	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "cpufreq:\n");
 	for (i = 0; i < CLUSTER_NUM; ++i) {
 		idx = cc_get_cpu_idx(i);
@@ -1332,18 +1356,20 @@ static int cc_dump_status_show(char *buf, const struct kernel_param *kp)
 		}
 		pol = cpufreq_cpu_get(idx);
 		if (!pol) {
-			cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "cluster %d can't get policy\n", i);
+			cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+				"cluster %d can't get policy\n", i);
 			continue;
 		}
-		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "cluster %d min %u max %u cur %u, cc_min %u cc_max %u\n",
-			i, pol->min, pol->max, pol->cur, pol->cc_min, pol->cc_max);
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+				"cluster %d min %u max %u cur %u, cc_min %u cc_max %u\n",
+				i, pol->min, pol->max, pol->cur, pol->cc_min, pol->cc_max);
 		cpufreq_cpu_put(pol);
 	}
 
-	/* dump ddrfreq control status */
 	val = query_ddrfreq();
 	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "ddrfreq: %llu\n", val);
-	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "expected ddrfreq: %lu\n", atomic_read(&cc_expect_ddrfreq));
+	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+			"expected ddrfreq: %lu\n", atomic_read(&cc_expect_ddrfreq));
 	return cnt;
 }
 
@@ -1351,6 +1377,138 @@ static struct kernel_param_ops cc_dump_status_ops = {
 	.get = cc_dump_status_show,
 };
 module_param_cb(dump_status, &cc_dump_status_ops, NULL, 0644);
+
+static unsigned int ccdm_min_util_threshold = 35;
+static int ccdm_min_util_threshold_store(const char *buf,
+		const struct kernel_param *kp)
+{
+	unsigned int val;
+
+	if (sscanf(buf, "%u\n", &val) <= 0)
+		return 0;
+
+	ccdm_min_util_threshold = val;
+
+	return 0;
+}
+
+static int ccdm_min_util_threshold_show(char *buf,
+		const struct kernel_param *kp)
+{
+	return snprintf(buf, PAGE_SIZE, "%u\n", ccdm_min_util_threshold);
+}
+
+static struct kernel_param_ops ccdm_min_thres_ops = {
+	.set = ccdm_min_util_threshold_store,
+	.get = ccdm_min_util_threshold_show,
+};
+module_param_cb(ccdm_min_util_thres, &ccdm_min_thres_ops, NULL, 0664);
+
+unsigned int ccdm_get_min_util_threshold(void)
+{
+	return ccdm_min_util_threshold;
+}
+
+static int cc_ccdm_status_show(char *buf, const struct kernel_param *kp)
+{
+	struct cpufreq_policy *pol;
+	int cnt = 0;
+	int i, idx;
+	u64 val;
+
+	struct ccdm_info {
+		long long c_min[3];
+		long long c_max[3];
+		long long c_fps_boost[3];
+		long long fps_boost_hint;
+		long long trust[3];
+		long long weight[3];
+		long long c_fps_boost_ddrfreq;
+		long long ddrfreq;
+		long long tb_freq_boost[3];
+		long long tb_place_boost_hint;
+		long long tb_idle_block_hint[8];
+	} info;
+
+	ccdm_get_status((void *) &info);
+
+	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "cpufreq:\n");
+	for (i = 0; i < 3; ++i) {
+		idx = cc_get_cpu_idx(i);
+		if (idx == -1) {
+			cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+				"cluster %d offline\n", i);
+			continue;
+		}
+		pol = cpufreq_cpu_get(idx);
+		if (!pol) {
+			cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+				"cluster %d can't get policy\n", i);
+			continue;
+		}
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+			"cluster %d min %u max %u cur %u, ",
+			i, pol->min, pol->max, pol->cur);
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+			"ccdm: min %lld max %lld ",
+			info.c_min[i], info.c_max[i]);
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+			"fps_boost %lld trust %lld weight %lld\n",
+			info.c_fps_boost[i], info.trust[i], info.weight[i]);
+		cpufreq_cpu_put(pol);
+	}
+	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+		"fps_boost hint %lld\n", info.fps_boost_hint);
+
+	val = query_ddrfreq();
+	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+		"ddrfreq: %llu exptected: %llu hint: %llu\n",
+		val, info.ddrfreq, info.c_fps_boost_ddrfreq);
+
+	for (i = 0; i < 3; ++i) {
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+		"tb_freq_boost: clus %lld, extra util %lld\n",
+		i, info.tb_freq_boost[i]);
+	}
+	cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+		"tb_place_boost: %lld\n", info.tb_place_boost_hint);
+
+	for (i = 0; i < 8; ++i) {
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+		"tb_idle_block[%d]: %llu\n",
+		i, (u64)info.tb_idle_block_hint[i]);
+	}
+
+	return cnt;
+}
+
+static struct kernel_param_ops cc_ccdm_status_ops = {
+	.get = cc_ccdm_status_show,
+};
+module_param_cb(ccdm_status, &cc_ccdm_status_ops, NULL, 0644);
+
+static const char *cc_category_tags[CC_CTL_CATEGORY_MAX] = {
+	"cpufreq_0",
+	"cpufreq_1",
+	"cpufreq_2",
+	"fps_boost",
+	"ddrfreq",
+	"sched_prime_boost",
+	"cpufreq_0_query",
+	"cpufreq_1_query",
+	"cpufreq_2_query",
+	"ddrfreq_query",
+	"turbo boost freq",
+	"turbo boost placement",
+};
+
+static inline const char *cc_category_tags_mapping(int idx)
+{
+	if (idx >= 0 && idx < CC_CTL_CATEGORY_MAX)
+		return cc_category_tags[idx];
+
+	return "";
+}
 
 static int cc_dump_record_show(char *buf, const struct kernel_param *kp)
 {
@@ -1361,29 +1519,12 @@ static int cc_dump_record_show(char *buf, const struct kernel_param *kp)
 	int i;
 
 	for (i = 0; i < CC_CTL_CATEGORY_MAX; ++i) {
-		/* ignore query part */
-		if (i >= CC_CTL_CATEGORY_CLUS_0_FREQ_QUERY)
-			break;
+		if (cc_is_query(i))
+			continue;
 
 		spin_lock(&cc_record[i].lock);
-		switch (i) {
-		case CC_CTL_CATEGORY_CLUS_0_FREQ: tag = "cpufreq_0:"; break;
-		case CC_CTL_CATEGORY_CLUS_1_FREQ: tag = "cpufreq_1:"; break;
-		case CC_CTL_CATEGORY_CLUS_2_FREQ: tag = "cpufreq_2:"; break;
-		case CC_CTL_CATEGORY_CPU_FREQ_BOOST: tag = "cpufreq_boost:"; break;
-		case CC_CTL_CATEGORY_DDR_VOTING_FREQ:
-			tag = "ddrfreq voting:";
-			break;
-		case CC_CTL_CATEGORY_DDR_LOCK_FREQ:
-			tag = "ddrfreq lock:";
-			break;
-		case CC_CTL_CATEGORY_SCHED_PRIME_BOOST: tag = "sched_prime_boost:"; break;
-		case CC_CTL_CATEGORY_CLUS_0_FREQ_QUERY: tag = "cpufreq_0_query:"; break;
-		case CC_CTL_CATEGORY_CLUS_1_FREQ_QUERY: tag = "cpufreq_1_query:"; break;
-		case CC_CTL_CATEGORY_CLUS_2_FREQ_QUERY: tag = "cpufreq_2_query:"; break;
-		case CC_CTL_CATEGORY_DDR_FREQ_QUERY: tag = "ddrfreq_query:"; break;
-		}
-		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "%s\n", tag);
+		tag = cc_category_tags_mapping(i);
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "%s:\n", tag);
 		for (prio = 0; prio < CC_PRIO_MAX; ++prio) {
 			cnt += snprintf(buf + cnt, PAGE_SIZE - cnt, "  p[%d]:\n", prio);
 			list_for_each_entry(data, &cc_record[i].phead[prio], node) {
@@ -1408,6 +1549,31 @@ static struct kernel_param_ops cc_dump_record_ops = {
 };
 module_param_cb(dump_record, &cc_dump_record_ops, NULL, 0644);
 
+static int cc_dump_stat_show(char *buf, const struct kernel_param *kp)
+{
+	const char *tag;
+	long long cc_cnt, cc_tcnt;
+	int cnt = 0;
+	int i;
+
+	for (i = 0; i < CC_CTL_CATEGORY_MAX; ++i) {
+		tag = cc_category_tags_mapping(i);
+		cc_cnt = atomic64_read(&cc_stat.cnt[i]);
+		cc_tcnt = atomic64_read(&cc_stat.tcnt[i]) + cc_cnt;
+		atomic64_set(&cc_stat.cnt[i], 0);
+		atomic64_set(&cc_stat.tcnt[i], cc_tcnt);
+
+		cnt += snprintf(buf + cnt, PAGE_SIZE - cnt,
+			"%s: %lld %lld\n", tag, cc_cnt, cc_tcnt);
+	}
+	return cnt;
+}
+
+static struct kernel_param_ops cc_dump_stat_ops = {
+	.get = cc_dump_stat_show,
+};
+module_param_cb(dump_stat, &cc_dump_stat_ops, NULL, 0644);
+
 static const struct file_operations cc_ctl_proc_fops = {
 	.owner = THIS_MODULE,
 	.open = cc_ctl_open,
@@ -1426,12 +1592,9 @@ static inline void cc_proc_init(void)
 
 static int cc_init(void)
 {
-	/* FIXME
-	 * remove later, so far just for compatible
-	 */
-	cc_cdev_init(); // create /dev/cc_ctl
+	cc_cdev_init();
 
-	cc_proc_init(); // create /proc/cc_ctl
+	cc_proc_init();
 	cc_record_init();
 	cc_worker_init();
 	cc_logi("control center inited\n");

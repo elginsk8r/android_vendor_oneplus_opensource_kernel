@@ -14,17 +14,14 @@
 #ifndef _OP_STRUCT_OFFSET_HELPER_INC_
 #define _OP_STRUCT_OFFSET_HELPER_INC_
 
-/* define macro to extern function declaration */
 #define gen_type_offset(type) \
 	extern unsigned int get_##type##_offset(int m)
 
-/* define macro to create offset impl and export get offset/value symbol */
 #define gen_type_offset_impl(type) \
 	unsigned int get_##type##_offset(int m) \
 		{ return _##type##_offset[m]; } \
 	EXPORT_SYMBOL(get_##type##_offset)
 
-/* enum of struct zone */
 enum {
 	ZONE_OFFSET_LOCK,
 	ZONE_OFFSET_ZSP,
@@ -37,7 +34,6 @@ enum {
 			+ get_zone_offset(ZONE_OFFSET_ZSP)))
 gen_type_offset(zone);
 
-/* enum of struct pglist_data */
 enum {
 	PGLIST_DATA_OFFSET_NODE_ZONES,
 

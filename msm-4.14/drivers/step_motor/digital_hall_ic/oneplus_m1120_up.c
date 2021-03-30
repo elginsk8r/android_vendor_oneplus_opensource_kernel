@@ -408,7 +408,6 @@ static bool m1120_up_get_enable(dhall_data_t* dhall_data)
     return enable > 0 ? true : false;
 }
 
-//需要看看這個怎麼搞
 static void m1120_up_set_enable(dhall_data_t* dhall_data, bool enable)
 {
     dhall_data_t* p_hall_data = dhall_data;
@@ -829,8 +828,6 @@ static int m1120_up_reset_device(dhall_data_t* dhall_data)
         return err;
     }
 
-    //set power on mode
-    //这边若不行的话,重新搞的函数
     m1120_up_set_enable(p_hall_data, true);//TO DO : set disable when boot finish???
     MOTOR_LOG("5 \n ");
     return err;

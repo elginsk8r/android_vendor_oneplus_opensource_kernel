@@ -84,7 +84,6 @@ static struct page *ctech_defrag_pool_alloc(struct zone *zone, unsigned long fla
 	return page;
 }
 
-/* return pool size, if this allocation cannot use our pool */
 static long ctech_calculate_reserved_pool(struct zone *z, int order, int alloc_flag)
 {
 	if (check_alloc_flag(alloc_flag, order))
@@ -105,7 +104,6 @@ static void release_unused_area(int request)
 	if (request)
 		request = request_reserved_block();
 
-	/* for_each_zone(zone) { */
 	for (zone = ctech_first_zone(); zone; zone = ctech_next_zone(zone)) {
 		if (strstr(zone->name, "Movable") != NULL)
 			continue;
@@ -150,7 +148,6 @@ static int __init defrag_pool_setup(void)
 	int nr_pgblock = 0;
 	int nr_movebcak = 0;
 
-	/* for_each_zone(zone) { */
 	for (zone = ctech_first_zone(); zone; zone = ctech_next_zone(zone)) {
 		nr_pgblock = 0;
 		if (strstr(zone->name, "Movable") != NULL)

@@ -17,6 +17,8 @@
 #include <linux/string.h>
 #include <linux/task_work.h>
 #include <linux/oem_force_dump.h>
+#include <linux/sched/signal.h>
+#include <linux/syscalls.h>
 
 struct sock *nl_sk;
 static int fd = -1;
@@ -25,7 +27,26 @@ static struct work_struct smg_work;
 
 #define MAX_MSGSIZE 1024
 static int message_state = -1;
+enum key_stat_item pwr_status, vol_up_status;
 
+void send_sig_to_get_trace(char *name)
+{
+	struct task_struct *p;
+
+	for_each_process(p)
+		if (!strcmp(p->comm, name)) {
+			do_send_sig_info(SIGQUIT, SEND_SIG_FORCED, p, true);
+			msleep(500);
+			sys_sync();
+			break;
+		}
+}
+
+void compound_key_to_get_trace(char *name)
+{
+	if (pwr_status == key_pressed && vol_up_status == key_pressed)
+		send_sig_to_get_trace(name);
+}
 
 /*
  * the way goto force dump:

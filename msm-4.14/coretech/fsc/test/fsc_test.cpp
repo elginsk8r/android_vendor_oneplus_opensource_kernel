@@ -75,10 +75,6 @@ TEST(fsc, add_allow_list) {
 	}
 }
 
-/*
- * testing coverage:
- * open related
- */
 #define GEN_TEST_OPEN_ALIAS(num) \
 TEST(fsc, open_alias_##num) { \
 	const char* target = EMPTY_FILE_ALIAS_##num; \
@@ -98,10 +94,6 @@ GEN_TEST_OPEN_ALIAS(3);
 GEN_TEST_OPEN_ALIAS(4);
 GEN_TEST_OPEN_ALIAS(5);
 
-/*
- * testing coverage:
- * mv rename
- */
 #define GEN_TEST_RENAME_ALIAS(num) \
 TEST(fsc, rename_alias_##num) { \
 	const char* from  = PREPARE_FILE; \
@@ -123,10 +115,6 @@ GEN_TEST_RENAME_ALIAS(3)
 GEN_TEST_RENAME_ALIAS(4)
 GEN_TEST_RENAME_ALIAS(5)
 
-/*
- * testing coverage:
- * link symlink
- */
 #define GEN_TEST_LINK_ALIAS(num) \
 TEST(fsc, link_##num) { \
 	const char* from  = PREPARE_FILE; \
@@ -171,9 +159,6 @@ GEN_TEST_SYMLINK_ALIAS(3)
 GEN_TEST_SYMLINK_ALIAS(4)
 GEN_TEST_SYMLINK_ALIAS(5)
 
-/*
- * testing for race
- */
 static void *thread_stat(void *arg __unused) {
 	struct stat sb;
 	while (stat(EMPTY_FILE, &sb));
@@ -215,7 +200,6 @@ TEST(fsc, race) {
 		pthread_join(open_tid, NULL);
 
 		EXPECT_EQ(unlink(EMPTY_FILE), 0);
-		//GTEST_LOG_(INFO) << "RACE TEST: (" << test << "/" << test_ceil << ") pass";
 	}
 	fsc_test_deinit();
 }

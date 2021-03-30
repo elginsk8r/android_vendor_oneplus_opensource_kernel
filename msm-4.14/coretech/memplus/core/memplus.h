@@ -8,6 +8,7 @@ enum {
 	RECLAIM_QUEUE,
 	RECLAIM_DONE,
 	SWAPIN_QUEUE,
+	GC_RECLAIM_QUEUE,
 };
 
 enum {

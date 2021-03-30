@@ -111,6 +111,7 @@ struct dhall_operations {
 	int			irq;
 	//bool        irq_monitor_started;
 	//bool        is_irq_abnormal;
+	bool	project_support;
 };
 
 extern int oneplus_register_hall(const char *name, struct dhall_operations *ops);
